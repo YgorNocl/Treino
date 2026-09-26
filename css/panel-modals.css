@@ -383,3 +383,9 @@ body:has(.rest-overlay.visible) .toast-notification.show { bottom: calc(180px + 
 /* Detalhe do dia: apagar um treino marcado sem querer. */
 .day-delete-btn { display: block; width: 100%; margin: 6px 0 18px; padding: 12px; background: transparent; border: 1px dashed rgba(255, 90, 95, 0.45); border-radius: 12px; color: var(--danger); font-family: var(--font-body); font-size: 13px; font-weight: 600; cursor: pointer; }
 .day-delete-btn:active { background: rgba(255, 90, 95, 0.08); }
+
+/* Dia com mais de um treino (fundo dividido, inline): o degradê cobre também a
+   borda transparente — sem isso ele se repetia por baixo dela e sobrava um
+   fiapo de cor na quina. Sombra no número para ler bem sobre as duas cores. */
+.cal-cell, .cali-cal-cell { background-origin: border-box; background-repeat: no-repeat; }
+.cal-cell.trained .cal-cell-daynum, .cali-cal-cell.trained span { text-shadow: 0 1px 3px rgba(0, 0, 0, 0.45); }

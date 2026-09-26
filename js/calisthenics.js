@@ -6,7 +6,7 @@ import {
   fmtClock,
   fmtStopwatch,
   escapeHtml,
-  CALI_SKILL_MAP
+  stepMuscles
 } from './calisthenics-data.js';
 import * as store from './calisthenics-store.js';
 import { initPanels, openCalendar, openProgress, openGuide, openDay, closePanels, sessionRowHtml } from './calisthenics-panels.js';
@@ -248,10 +248,10 @@ function showFinishSummary() {
 
 async function shareFinishImage(mode, date, day, items, duration) {
   const isMobi = mode === 'mobi';
-  const skills = [...new Set(items.map(item => item.step.skillId))].map(id => CALI_SKILL_MAP[id]).filter(s => s && s.muscles);
+  const muscles = items.map(item => stepMuscles(item.step)).filter(Boolean);
   const levelByName = {};
-  skills.forEach(s => s.muscles.sec.forEach(m => { levelByName[m] = 'secondary'; }));
-  skills.forEach(s => s.muscles.prim.forEach(m => { levelByName[m] = 'primary'; }));
+  muscles.forEach(m => m.sec.forEach(name => { levelByName[name] = 'secondary'; }));
+  muscles.forEach(m => m.prim.forEach(name => { levelByName[name] = 'primary'; }));
   const third = isMobi
     ? { value: String(items.length), label: 'Exercícios' }
     : day.reps > 0 ? { value: String(day.reps), label: 'Reps' } : { value: fmtSeconds(day.holdSeconds), label: 'Sob tensão' };

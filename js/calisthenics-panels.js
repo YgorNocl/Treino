@@ -1,8 +1,9 @@
 import {
   MODE_SKILLS,
+  MODE_ALL_SKILLS,
+  stepMuscles,
   CALI_SKILL_MAP,
   CALI_STEPS,
-  CALI_AREA_MAP,
   fmtValue,
   fmtSeconds,
   escapeHtml,
@@ -12,7 +13,7 @@ import {
 import * as store from './calisthenics-store.js';
 import { buildEvolutionChart, buildSparkline, metricValue } from './calisthenics-charts.js';
 import { poseSvgs } from './calisthenics-poses.js';
-import { formatDateBR, formatDateShortBR, todayString, dateStrFromDate, emptyStateHtml } from './utils.js';
+import { formatDateBR, formatDateShortBR, todayString, dateStrFromDate, emptyStateHtml, dayColorsBackground } from './utils.js';
 import { musclesHtml } from './body-map.js';
 import { confirmDialog } from './dialog.js';
 
@@ -40,8 +41,10 @@ let panelMode = 'cali';
 
 const $ = id => document.getElementById(id);
 
-function areaColor(areaId) {
-  return CALI_AREA_MAP[areaId] ? CALI_AREA_MAP[areaId].color : 'var(--accent)';
+// Treinos feitos num dia, na ordem dos botões do topo (para as cores do calendário).
+function skillsOfDay(day) {
+  const ids = new Set([...day.stepIds].map(id => CALI_STEPS[id] && CALI_STEPS[id].skillId));
+  return (MODE_ALL_SKILLS[panelMode] || []).filter(skill => ids.has(skill.id));
 }
 
 function fmtDelta(step, diff) {
@@ -111,8 +114,10 @@ function renderCalendar() {
       if (cell.isToday) classes.push('today');
       if (cell.isFuture) classes.push('future');
       if (!cell.data) return `<div class="${classes.join(' ')} lvl-0"><span>${cell.day}</span></div>`;
-      classes.push(`lvl-${store.intensityLevel(cell.data.sets)}`);
-      return `<button type="button" class="${classes.join(' ')}" data-date="${cell.dateStr}" aria-label="${formatDateBR(cell.dateStr)}: ${cell.data.sets} séries">
+      // Cor do treino feito (dividida quando houve mais de um), como na academia.
+      const skills = skillsOfDay(cell.data);
+      classes.push('trained');
+      return `<button type="button" class="${classes.join(' ')}" style="background: ${dayColorsBackground(skills.map(s => s.color))}" data-date="${cell.dateStr}" aria-label="${formatDateBR(cell.dateStr)}: ${skills.map(s => s.name).join(' e ')}, ${cell.data.sets} séries">
         <span>${cell.day}</span>
       </button>`;
     })
@@ -138,6 +143,9 @@ function renderCalendar() {
     <div class="cali-cal-card">
       <div class="cali-cal-labels">${WEEKDAYS.map(l => `<span>${l}</span>`).join('')}</div>
       <div class="cali-cal-grid">${grid}</div>
+    </div>
+    <div class="cal-legend">
+      ${(MODE_SKILLS[panelMode] || []).map(s => `<span class="cal-legend-item"><span class="cal-legend-swatch" style="background: ${s.color}"></span>${s.short || s.name}</span>`).join('')}
     </div>`;
 
   $('caliCalendarContent').querySelectorAll('.cali-cal-cell[data-date]').forEach(el => {
@@ -158,6 +166,7 @@ function renderCalendar() {
 export function openCalendar(mode) {
   panelMode = mode || hooks.getMode();
   monthOffset = 0;
+  $('caliCalendarTitle').textContent = panelMode === 'mobi' ? 'Calendário de Mobilidade' : 'Calendário de Calistenia';
   renderCalendar();
   $('caliCalendarModal').classList.add('visible');
 }
@@ -191,7 +200,7 @@ export function openDay(mode, date) {
         .join('');
       const notes = [...new Set(item.sets.map(s => s.n).filter(Boolean))];
       return `
-        <div class="cali-day-item" style="--area:${areaColor(item.step.area)}">
+        <div class="cali-day-item" style="--area:${skill.color}">
           <div class="cali-day-item-head">
             <div>
               <div class="cali-day-item-name">${item.step.name}</div>
@@ -206,9 +215,10 @@ export function openDay(mode, date) {
     .join('');
 
   $('caliDayTitle').textContent = date === todayString() ? 'Hoje' : formatDateBR(date);
-  const skills = [...new Set(items.map(item => item.step.skillId))].map(id => CALI_SKILL_MAP[id]).filter(s => s.muscles);
-  const primary = [...new Set(skills.flatMap(s => s.muscles.prim))];
-  const secondary = [...new Set(skills.flatMap(s => s.muscles.sec))].filter(m => !primary.includes(m));
+  // Regiões de cada exercício feito (um treino de mobilidade mistura regiões).
+  const dayMuscles = items.map(item => stepMuscles(item.step)).filter(Boolean);
+  const primary = [...new Set(dayMuscles.flatMap(m => m.prim))];
+  const secondary = [...new Set(dayMuscles.flatMap(m => m.sec))].filter(m => !primary.includes(m));
   const musclesBlock = primary.length
     ? `<div class="day-muscles">${musclesHtml(primary, secondary, panelMode === 'mobi' ? 'Regiões do dia' : 'Músculos do dia')}</div>`
     : '';
@@ -261,7 +271,7 @@ export function openGuide(stepId) {
   media.style.display = mediaMarkup ? 'block' : 'none';
   $('caliGuideTitle').textContent = step.name;
   $('caliGuideAlias').textContent = step.alias;
-  const muscles = CALI_SKILL_MAP[step.skillId].muscles;
+  const muscles = stepMuscles(step);
   const musclesEl = $('caliGuideMuscles');
   musclesEl.style.display = muscles ? '' : 'none';
   musclesEl.innerHTML = muscles
@@ -289,7 +299,7 @@ function renderHistoryTab(body, withHistory) {
     return;
   }
   const chevron = '<svg class="hist-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>';
-  const skills = MODE_SKILLS[panelMode] || [];
+  const skills = MODE_ALL_SKILLS[panelMode] || [];
   body.innerHTML = skills.map(skill => {
     const steps = withHistory.filter(step => step.skillId === skill.id);
     if (steps.length === 0) return '';
@@ -331,7 +341,7 @@ function renderHistoryTab(body, withHistory) {
 
 function stepSelectHtml(withHistory) {
   const check = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg>';
-  const skills = MODE_SKILLS[panelMode] || [];
+  const skills = MODE_ALL_SKILLS[panelMode] || [];
   const groups = skills.map(skill => {
     const steps = withHistory.filter(step => step.skillId === skill.id);
     if (steps.length === 0) return '';

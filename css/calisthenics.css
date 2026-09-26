@@ -97,11 +97,10 @@ body:not(.mode-cali):not(.mode-mobi) .cali-or-mobi-only { display: none !importa
 .cali-cal-cell.today { border-color: var(--text-dim); }
 .cali-cal-cell.future { color: rgba(255, 255, 255, 0.15); }
 button.cali-cal-cell { cursor: pointer; color: var(--text); }
+/* Dia treinado: cor do treino (fundo inline), número em branco. */
+.cali-cal-cell.trained { color: #f4f4f2; font-weight: 700; border-color: transparent; }
+.cali-cal-cell.trained.today { border-color: var(--text); }
 button.cali-cal-cell:active { transform: scale(0.92); }
-.cali-cal-cell.lvl-1 { background: rgba(var(--accent-rgb), 0.16); }
-.cali-cal-cell.lvl-2 { background: rgba(var(--accent-rgb), 0.32); }
-.cali-cal-cell.lvl-3 { background: rgba(var(--accent-rgb), 0.5); }
-.cali-cal-cell.lvl-4 { background: rgba(var(--accent-rgb), 0.72); color: #0f1113; font-weight: 700; }
 
 .cali-overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.65); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); display: flex; align-items: flex-end; justify-content: center; z-index: 400; opacity: 0; pointer-events: none; transition: opacity 0.3s; }
 .cali-overlay.visible { opacity: 1; pointer-events: auto; }

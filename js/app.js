@@ -1,7 +1,7 @@
 import { syncId, setSyncId, fetchCloudBackup, snapshotLocalData, MEDIA_BASE, db, workoutData, days, setsFor, exercisesEverIn, savePlan, addCustomExercise, MUSCLE_CATEGORIES, VOLUME_GROUP } from './data.js';
 import { trySync, syncNow, cancelPendingSync, updateSyncStatus } from './sync.js';
 import { closeRestOverlay, initRestTimer, startRestFor } from './rest-timer.js';
-import { pad2, todayString, yesterdayString, parseNum, safeId, unitLabel, formatLoad, estimatedMax, formatDateBR, formatDateShortBR, dateStrFromDate, getWeekStart, getWeekEnd, emptyStateHtml } from './utils.js';
+import { pad2, todayString, yesterdayString, parseNum, safeId, unitLabel, formatLoad, estimatedMax, formatDateBR, formatDateShortBR, dateStrFromDate, getWeekStart, getWeekEnd, emptyStateHtml, dayColorsBackground } from './utils.js';
 import { musclesHtml, bodyMapHtml, regionLevels } from './body-map.js';
 import { buildSummaryImage } from './share-card.js';
 import { openSetEditor } from './set-editor.js';
@@ -1526,6 +1526,12 @@ function bindDayDetailModal() {
 const CAL_MONTH_NAMES = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
 const CAL_DAY_LABELS = ['D', 'S', 'T', 'Q', 'Q', 'S', 'S'];
 const CAL_DAY_COLOR_CLASSES = ['cal-color-1', 'cal-color-2', 'cal-color-3', 'cal-color-4', 'cal-color-5'];
+// Mesmas cores das classes cal-color-* (css/panel-modals.css), para dividir o dia com mais de um treino.
+const CAL_DAY_COLORS = ['#8b5cf6', '#3b82f6', '#ec4899', '#f97316', '#14b8a6'];
+function getDayColor(dayName) {
+  const idx = Math.max(0, days.indexOf(dayName));
+  return CAL_DAY_COLORS[idx % CAL_DAY_COLORS.length];
+}
 let calMonthOffset = 0;
 
 function getDayColorClass(dayName) {
@@ -1547,7 +1553,7 @@ function buildMonthGrid(year, month, byDate) {
     cells.push({
       day: d,
       dateStr,
-      workout: byDate.has(dateStr) ? [...byDate.get(dateStr)][0] : null,
+      workouts: byDate.has(dateStr) ? [...byDate.get(dateStr)].sort((a, b) => orderedDays.indexOf(a) - orderedDays.indexOf(b)) : [],
       isToday: dateStr === today,
       isFuture: dateStr > today
     });
@@ -1577,12 +1583,14 @@ function renderCalendarModal() {
   let gridHtml = `<div class="cal-grid-labels">${CAL_DAY_LABELS.map(l => `<span>${l}</span>`).join('')}</div><div class="cal-grid">`;
   cells.forEach(cell => {
     if (!cell) { gridHtml += `<div class="cal-cell empty"></div>`; return; }
-    const hasWorkout = !!cell.workout;
+    const hasWorkout = cell.workouts.length > 0;
     const classes = ['cal-cell'];
     if (cell.isToday) classes.push('today');
     if (cell.isFuture) classes.push('future');
-    if (hasWorkout) { classes.push('trained'); classes.push(getDayColorClass(cell.workout)); }
-    gridHtml += `<div class="${classes.join(' ')}" ${hasWorkout ? `data-date="${cell.dateStr}"` : ''}>
+    if (hasWorkout) { classes.push('trained'); classes.push(getDayColorClass(cell.workouts[0])); }
+    // Superior e Inferior no mesmo dia: o quadradinho fica dividido nas duas cores.
+    const split = cell.workouts.length > 1 ? ` style="background: ${dayColorsBackground(cell.workouts.map(getDayColor))}"` : '';
+    gridHtml += `<div class="${classes.join(' ')}"${split} ${hasWorkout ? `data-date="${cell.dateStr}"` : ''}>
       <span class="cal-cell-daynum">${cell.day}</span>
     </div>`;
   });

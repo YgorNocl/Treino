@@ -19,7 +19,9 @@ export const CALI_LEVELS = {
   avancado: 'Avançado'
 };
 
-export const CALI_SKILLS = [
+// Treinos de calistenia e as regiões de mobilidade (catálogo). A mobilidade que
+// aparece para treinar é montada abaixo, em MOBI_DAYS.
+const BASE_SKILLS = [
   {
     id: 'flexoes',
     muscles: { prim: ['Peito'], sec: ['Tríceps', 'Ombro Anterior', 'Core'] },
@@ -690,6 +692,96 @@ export const CALI_SKILLS = [
   }
 ];
 
+// Mobilidade em 2 treinos por semana (ex.: terça e sexta), ~10 min cada, em vez
+// de 5 regiões com 21 exercícios. Os exercícios mantêm o mesmo id, então o
+// histórico continua ligado a eles. Cada exercício guarda as regiões que trabalha
+// (antes vinham do grupo), porque um treino agora mistura regiões.
+// Ajustes de meta: alongamentos estáticos vão para 30s e a rotação torácica para
+// 2 séries, compensando a frequência menor.
+const MOBI_DAYS = [
+  {
+    id: 'mobilidade-superior',
+    short: 'Superior',
+    name: 'Mobilidade Superior',
+    alias: 'Ombros, punhos e coluna',
+    steps: [
+      ['shoulder-dislocate-stick'],
+      ['wall-slide'],
+      ['thoracic-rotation-quadruped', { sets: 2, value: 8 }],
+      ['sleeper-stretch'],
+      ['wrist-circles-floor'],
+      ['wrist-flexor-stretch', { sets: 2, value: 30 }]
+    ]
+  },
+  {
+    id: 'mobilidade-inferior',
+    short: 'Inferior',
+    name: 'Mobilidade Inferior',
+    alias: 'Quadril, posterior e tornozelo',
+    steps: [
+      ['cat-camel'],
+      ['ankle-rock-knee'],
+      ['hip-90-90-flow'],
+      ['world-greatest-stretch'],
+      ['deep-squat-rock'],
+      ['toe-touch-active', { sets: 2, value: 30 }]
+    ]
+  }
+];
+
+function buildMobilityDays(baseSkills) {
+  const regions = baseSkills.filter(s => s.area === 'mobilidade');
+  const stepById = {};
+  regions.forEach(region => region.steps.forEach(step => {
+    step.muscles = region.muscles;
+    stepById[step.id] = step;
+  }));
+  const used = new Set();
+  const days = MOBI_DAYS.map(day => {
+    const steps = day.steps.map(([id, goal]) => {
+      used.add(id);
+      if (goal) stepById[id].goal = goal;
+      return stepById[id];
+    });
+    const prim = [...new Set(steps.flatMap(s => s.muscles.prim))];
+    const sec = [...new Set(steps.flatMap(s => s.muscles.sec))].filter(m => !prim.includes(m));
+    return {
+      id: day.id,
+      short: day.short,
+      name: day.name,
+      alias: day.alias,
+      area: 'mobilidade',
+      level: 'iniciante',
+      muscles: { prim, sec },
+      summary: `${day.alias}. Movimentos ativos e alongamentos curtos, para fazer em uns 10 minutos.`,
+      steps
+    };
+  });
+  // Exercícios que saíram dos treinos: não aparecem para treinar, mas o
+  // histórico deles continua no calendário e nas estatísticas.
+  const retired = regions.flatMap(r => r.steps).filter(step => !used.has(step.id));
+  days.push({ id: 'mobilidade-anteriores', name: 'Exercícios anteriores', area: 'mobilidade', hidden: true, muscles: null, steps: retired });
+  return days;
+}
+
+export const CALI_SKILLS = [
+  ...BASE_SKILLS.filter(s => s.area !== 'mobilidade'),
+  ...buildMobilityDays(BASE_SKILLS)
+];
+
+// Cor de cada treino no calendário (como Superior/Inferior na academia). A
+// mobilidade usa as mesmas cores da academia para Superior (azul) e Inferior (roxo).
+const SKILL_COLORS = {
+  'flexoes': '#f97316',
+  'core': '#14b8a6',
+  'elbow-lever': '#ec4899',
+  'l-sit': '#eab308',
+  'mobilidade-superior': '#3b82f6',
+  'mobilidade-inferior': '#8b5cf6',
+  'mobilidade-anteriores': '#6b7280'
+};
+CALI_SKILLS.forEach(skill => { skill.color = SKILL_COLORS[skill.id] || '#6b7280'; });
+
 export const CALI_STEP_LIST = CALI_SKILLS.flatMap(skill =>
   skill.steps.map((step, index) => Object.assign(step, { skillId: skill.id, area: skill.area, index }))
 );
@@ -698,10 +790,22 @@ export const CALI_STEPS = Object.fromEntries(CALI_STEP_LIST.map(step => [step.id
 export const CALI_SKILL_MAP = Object.fromEntries(CALI_SKILLS.map(skill => [skill.id, skill]));
 export const CALI_AREA_MAP = Object.fromEntries([...CALI_AREAS, ...MOBI_AREAS].map(area => [area.id, area]));
 
+// Treinos que aparecem nos botões do topo (sem o grupo escondido).
 export const MODE_SKILLS = {
   cali: CALI_SKILLS.filter(s => s.area !== 'mobilidade'),
+  mobi: CALI_SKILLS.filter(s => s.area === 'mobilidade' && !s.hidden)
+};
+
+// Todos os grupos, incluindo exercícios que saíram (para histórico e evolução).
+export const MODE_ALL_SKILLS = {
+  cali: MODE_SKILLS.cali,
   mobi: CALI_SKILLS.filter(s => s.area === 'mobilidade')
 };
+
+// Regiões/músculos de um exercício: os dele (mobilidade) ou os do treino.
+export function stepMuscles(step) {
+  return step.muscles || (CALI_SKILL_MAP[step.skillId] && CALI_SKILL_MAP[step.skillId].muscles) || null;
+}
 
 export const MODE_STEP_LIST = {
   cali: CALI_STEP_LIST.filter(step => step.area !== 'mobilidade'),

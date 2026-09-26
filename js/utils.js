@@ -67,3 +67,18 @@ export function emptyStateHtml(kind, title, text = '') {
       </svg>`;
   return `<div class="empty-state">${art}<strong>${title}</strong>${text ? `<span>${text}</span>` : ''}</div>`;
 }
+
+// Fundo de um dia no calendário: uma cor, ou o quadradinho dividido em partes
+// iguais lado a lado (com uma linha fina escura entre elas) quando houve mais de
+// um treino no dia.
+export function dayColorsBackground(colors) {
+  if (colors.length <= 1) return colors[0] || 'transparent';
+  const step = 100 / colors.length;
+  const parts = colors.map((c, i) => {
+    const from = i === 0 ? '0%' : `calc(${(i * step).toFixed(2)}% + 1px)`;
+    const to = i === colors.length - 1 ? '100%' : `calc(${((i + 1) * step).toFixed(2)}% - 1px)`;
+    const sep = i === colors.length - 1 ? '' : `, rgba(11, 12, 14, 0.55) ${to} calc(${((i + 1) * step).toFixed(2)}% + 1px)`;
+    return `${c} ${from} ${to}${sep}`;
+  }).join(', ');
+  return `linear-gradient(90deg, ${parts})`;
+}

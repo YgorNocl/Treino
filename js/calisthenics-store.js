@@ -209,14 +209,6 @@ export function getDayDetail(mode, date) {
   return items.sort((a, b) => a.sets[0].t - b.sets[0].t);
 }
 
-export function intensityLevel(sets) {
-  if (sets >= 15) return 4;
-  if (sets >= 10) return 3;
-  if (sets >= 5) return 2;
-  if (sets >= 1) return 1;
-  return 0;
-}
-
 export function buildMonthCells(year, month, index) {
   const startWeekday = new Date(year, month, 1).getDay();
   const total = new Date(year, month + 1, 0).getDate();

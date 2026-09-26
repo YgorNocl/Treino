@@ -1,4 +1,4 @@
-const CACHE_NAME = 'treino-cache-v32';
+const CACHE_NAME = 'treino-cache-v35';
 const MEDIA_CACHE = 'treino-media-v1';
 const MEDIA_HOST = 'raw.githubusercontent.com';
 const APP_SHELL = [
