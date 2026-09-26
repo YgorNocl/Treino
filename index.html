@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>Treino</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+<link rel="stylesheet" href="css/panel-modals.css">
+<link rel="stylesheet" href="css/calisthenics.css">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0b0c0e">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Treino">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" type="image/png" href="icons/favicon.png">
+<script>
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('sw.js', { scope: './' });
+  }
+</script>
+</head>
+<body>
+
+<div class="app">
+    <header class="topbar">
+        <div class="topbar-row">
+            <h1 class="gym-only" id="headerTitle">Treino</h1>
+            <h1 class="cali-only">Calistenia</h1>
+            <h1 class="mobi-only">Mobilidade</h1>
+            <div class="topbar-actions">
+                <button id="catalogBtn" class="icon-btn gym-only" aria-label="Catálogo">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+                </button>
+                <button id="bodyBtn" class="icon-btn" aria-label="Medidas Corporais">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                </button>
+                <button id="calendarBtn" class="icon-btn gym-only" aria-label="Calendário de Treinos">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4"/><path d="M8 2v4"/><path d="M3 10h18"/></svg>
+                </button>
+                <button id="menuBtn" class="icon-btn gym-only" aria-label="Menu e Estatísticas">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></svg>
+                </button>
+                <button id="caliCalendarBtn" class="icon-btn cali-only" aria-label="Calendário da calistenia">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4"/><path d="M8 2v4"/><path d="M3 10h18"/></svg>
+                </button>
+                <button id="caliStatsBtn" class="icon-btn cali-only" aria-label="Progresso da calistenia">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>
+                </button>
+                <button id="mobiCalendarBtn" class="icon-btn mobi-only" aria-label="Calendário da mobilidade">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4"/><path d="M8 2v4"/><path d="M3 10h18"/></svg>
+                </button>
+                <button id="mobiStatsBtn" class="icon-btn mobi-only" aria-label="Progresso da mobilidade">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>
+                </button>
+                <button id="configBtn" class="icon-btn" aria-label="Configurações">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                </button>
+            </div>
+        </div>
+        <p class="subtitle gym-only" id="headerSubtitle">Carregando...</p>
+        <p class="subtitle cali-only" id="caliSubtitle">Carregando...</p>
+        <p class="subtitle mobi-only" id="mobiSubtitle">Carregando...</p>
+        <span id="streakBadge" class="streak-badge gym-only" style="display:none;"></span>
+    </header>
+
+    <div class="mode-switch" id="modeSwitch" role="tablist" aria-label="Modo de treino">
+        <button type="button" role="tab" class="mode-btn active" data-mode="gym" aria-selected="true">Academia</button>
+        <button type="button" role="tab" class="mode-btn" data-mode="cali" aria-selected="false">Calistenia</button>
+        <button type="button" role="tab" class="mode-btn" data-mode="mobi" aria-selected="false">Mobilidade</button>
+    </div>
+
+    <nav class="selectors gym-only" id="daySelectors"></nav>
+
+    <div class="session-bar gym-only" id="sessionBar">
+        <div class="session-info">
+            <div class="session-info-left">
+                <span class="session-label">SÉRIES DE HOJE</span>
+                <span class="session-count" id="sessionCount">0<span class="session-total">/0</span></span>
+            </div>
+            <div class="workout-timer" id="workoutTimer">00:00</div>
+        </div>
+        <div class="session-track"><div class="session-fill" id="sessionFill"></div></div>
+    </div>
+
+    <main id="exerciseList" class="gym-only"></main>
+
+    <div class="gym-only" style="margin-top: 24px; margin-bottom: 40px;">
+        <button id="finishDayBtn" class="save-btn" style="width: 100%; padding: 16px; font-size: 16px;">Finalizar Treino Atual</button>
+    </div>
+
+    <section id="caliRoot" class="cali-root cali-or-mobi-only"></section>
+</div>
+
+<div class="rest-overlay" id="caliRestOverlay" role="status" aria-live="polite">
+    <div class="rest-card">
+        <div class="rest-progress"><div class="rest-progress-fill" id="caliRestProgress"></div></div>
+        <span class="rest-tag">DESCANSO</span>
+        <div class="rest-main">
+            <div class="rest-info">
+                <div class="rest-time" id="caliRestTime">1:30</div>
+            </div>
+            <div class="rest-actions">
+                <button type="button" class="rest-btn" id="caliRestMinus" aria-label="Menos 15 segundos">-15s</button>
+                <button type="button" class="rest-btn" id="caliRestPlus" aria-label="Mais 15 segundos">+15s</button>
+                <button type="button" class="rest-btn primary" id="caliRestSkip">Pular</button>
+            </div>
+        </div>
+        <div class="rest-presets">
+            <button type="button" class="cali-preset" data-time="60">1m</button>
+            <button type="button" class="cali-preset active" data-time="90">1.5m</button>
+            <button type="button" class="cali-preset" data-time="120">2m</button>
+            <button type="button" class="cali-preset" data-time="180">3m</button>
+        </div>
+    </div>
+</div>
+
+<div class="rest-overlay" id="restOverlay" role="status" aria-live="polite">
+    <div class="rest-card">
+        <div class="rest-progress"><div class="rest-progress-fill" id="restProgress"></div></div>
+        <span class="rest-tag">DESCANSO</span>
+        <div class="rest-main">
+            <div class="rest-info">
+                <div class="rest-time" id="restTime">1:30</div>
+            </div>
+            <div class="rest-actions">
+                <button type="button" class="rest-btn" id="restMinus15" aria-label="Menos 15 segundos">-15s</button>
+                <button type="button" class="rest-btn" id="restPlus15" aria-label="Mais 15 segundos">+15s</button>
+                <button type="button" class="rest-btn primary" id="restSkip">Pular</button>
+            </div>
+        </div>
+        <div class="rest-presets">
+            <button type="button" class="preset-btn" data-time="60">1m</button>
+            <button type="button" class="preset-btn active" data-time="90">1.5m</button>
+            <button type="button" class="preset-btn" data-time="120">2m</button>
+            <button type="button" class="preset-btn" data-time="180">3m</button>
+        </div>
+    </div>
+</div>
+
+<div class="stats-sheet" id="statsSheet">
+    <div class="sheet-handle"></div>
+    <div class="sheet-header">
+        <h2>Estatísticas</h2>
+        <button id="closeStats" class="icon-btn" aria-label="Fechar">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg>
+        </button>
+    </div>
+    <div class="sheet-tabs">
+        <button class="sheet-tab active" data-tab="cargas">Histórico</button>
+        <button class="sheet-tab" data-tab="evolucao">Evolução</button>
+        <button class="sheet-tab" data-tab="volume">Volume</button>
+    </div>
+    
+    <div id="statsBody" class="sheet-body accordion-container"></div>
+    <div id="evolutionBody" class="sheet-body" style="display:none"></div>
+    <div id="volumeBody" class="sheet-body" style="display:none"></div>
+</div>
+<div class="sheet-backdrop" id="sheetBackdrop"></div>
+
+<div class="full-modal" id="catalogModal">
+    <div class="full-modal-header">
+        <button id="closeCatalog" class="icon-btn" aria-label="Voltar">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>
+        </button>
+        <h2>Catálogo</h2>
+        <div style="width: 40px;"></div>
+    </div>
+    <div class="full-modal-content" id="catalogModalContent"></div>
+</div>
+
+<div class="full-modal" id="bodyModal">
+    <div class="full-modal-header">
+        <button id="closeBody" class="icon-btn" aria-label="Voltar">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>
+        </button>
+        <h2>Meu Corpo</h2>
+        <div style="width: 40px;"></div>
+    </div>
+    <div class="full-modal-content" id="bodyModalContent"></div>
+</div>
+
+<div class="full-modal" id="calendarModal">
+    <div class="full-modal-header">
+        <button id="closeCalendarModal" class="icon-btn" aria-label="Voltar">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>
+        </button>
+        <h2>Calendário</h2>
+        <div style="width: 40px;"></div>
+    </div>
+    <div class="full-modal-content" id="calendarModalContent"></div>
+</div>
+
+<div class="full-modal" id="configModal">
+    <div class="full-modal-header">
+        <button id="closeConfig" class="icon-btn" aria-label="Voltar">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>
+        </button>
+        <h2>Configurações</h2>
+        <div style="width: 40px;"></div>
+    </div>
+    <div class="full-modal-content">
+        <div class="backup-section">
+            <h3 style="margin-top:0;">Backup na Nuvem ☁️</h3>
+            <p>Seus treinos são salvos automaticamente neste celular. Para restaurar em outro aparelho (ou depois de reinstalar o app), use seu Código de Sincronização:</p>
+            <div style="background:var(--bg); border:1px solid var(--card-border); padding:16px; border-radius:12px; text-align:center; margin-bottom:12px;">
+                <span style="font-size:12px; color:var(--text-dim); text-transform:uppercase; font-weight:700;">Seu Código</span><br>
+                <strong id="syncIdDisplay" style="font-size:26px; color:var(--accent); letter-spacing:4px; font-family:var(--font-mono);"></strong>
+            </div>
+            <div id="syncStatusRow" style="display:flex; align-items:center; gap:8px; margin-bottom:16px; font-size:12px; color:var(--text-dim); font-family:var(--font-mono);">
+                <span id="syncStatusDot" style="width:8px; height:8px; border-radius:50%; background:var(--text-faint); flex-shrink:0;"></span>
+                <span id="syncStatusText">Verificando backup...</span>
+            </div>
+            <button id="syncNowBtn" class="save-btn" style="background:var(--card-border); color:var(--text); margin-bottom: 10px; width: 100%;">Fazer Backup Agora</button>
+            <button id="cloudRestoreBtn" class="save-btn" style="background:var(--card-border); color:var(--text); margin-bottom: 32px; width: 100%;">Baixar de outro código</button>
+
+            <h3>Corrigir Data de um Treino</h3>
+            <p>Se um treino feito perto da meia-noite ficou salvo no dia errado, use esta ferramenta para mover os registros dele para a data correta.</p>
+            <div class="input-row" style="margin-bottom: 12px;">
+                <div class="input-group">
+                    <label>Treino</label>
+                    <select id="fixDaySelect" style="width:100%; background: rgba(255,255,255,0.03); border: 1px solid var(--card-border); color: var(--text); padding: 14px; border-radius: 12px; font-family: var(--font-body); font-size: 14px; text-align:center;"></select>
+                </div>
+            </div>
+            <div class="input-row" style="margin-bottom: 16px;">
+                <div class="input-group"><label>Data atual</label><input type="date" id="fixFromDate" style="width:100%; background: rgba(255,255,255,0.03); border: 1px solid var(--card-border); color: var(--text); padding: 14px; border-radius: 12px; font-family: var(--font-mono); font-size: 14px; text-align:center;"></div>
+                <div class="input-group"><label>Data correta</label><input type="date" id="fixToDate" style="width:100%; background: rgba(255,255,255,0.03); border: 1px solid var(--card-border); color: var(--text); padding: 14px; border-radius: 12px; font-family: var(--font-mono); font-size: 14px; text-align:center;"></div>
+            </div>
+            <button id="fixDateBtn" class="save-btn" style="background:var(--card-border); color:var(--text); margin-bottom: 32px; width: 100%;">Corrigir Data</button>
+
+            <h3>App</h3>
+            <p>Se o app parecer travado numa versão antiga depois de uma atualização, force o download da versão mais recente.</p>
+            <button id="forceUpdateBtn" class="save-btn" style="background:var(--card-border); color:var(--text); margin-bottom: 32px; width: 100%;">Forçar Atualização do App</button>
+
+            <h3 style="color: var(--danger);">Zona de Perigo</h3>
+            <button id="clearDataBtn" class="save-btn" style="background: var(--danger); width: 100%;">Apagar Tudo Permanentemente</button>
+        </div>
+    </div>
+</div>
+
+<div class="info-modal" id="infoModal">
+  <div class="info-modal-content" role="dialog" aria-modal="true" aria-labelledby="infoTitle">
+    <h3 id="infoTitle">Título</h3>
+    <div id="infoMedia" class="info-media"></div>
+    <div id="infoMuscles" class="guide-section"></div>
+    <div class="guide-section">
+      <span class="guide-label">Dica de execução</span>
+      <p id="infoText">Texto explicativo.</p>
+    </div>
+    <button class="save-btn" id="closeInfo">Entendi</button>
+  </div>
+</div>
+
+<div class="day-detail-modal" id="dayDetailModal">
+  <div class="day-detail-content">
+    <div class="day-detail-handle"></div>
+    <div class="day-detail-header">
+      <h3 id="dayDetailTitle">Treino</h3>
+      <button id="closeDayDetail" class="icon-btn" aria-label="Fechar">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div id="dayDetailBody"></div>
+  </div>
+</div>
+
+<div class="summary-modal" id="summaryModal">
+  <div class="summary-modal-content">
+    <div class="summary-header">
+      <span class="summary-emoji">💪</span>
+      <h3>Treino finalizado!</h3>
+      <button id="closeSummary" class="icon-btn" aria-label="Fechar">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div id="summaryBody"></div>
+  </div>
+</div>
+
+<div class="toast-notification" id="toastNotification">
+    <strong style="color: var(--accent); font-size: 14px;">🏆 Meta Atingida!</strong><br>
+    <span style="font-size: 12px;">No próximo treino, aumente a carga e busque 8 repetições.</span>
+</div>
+
+<div class="full-modal" id="caliCalendarModal">
+    <div class="full-modal-header">
+        <button id="closeCaliCalendar" class="icon-btn" aria-label="Voltar">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>
+        </button>
+        <h2>Calendário de Calistenia</h2>
+        <div style="width: 40px;"></div>
+    </div>
+    <div class="full-modal-content" id="caliCalendarContent"></div>
+</div>
+
+<div class="full-modal" id="caliStatsModal">
+    <div class="full-modal-header">
+        <button id="closeCaliStats" class="icon-btn" aria-label="Voltar">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>
+        </button>
+        <h2>Progresso</h2>
+        <div style="width: 40px;"></div>
+    </div>
+    <div class="full-modal-content" id="caliStatsContent"></div>
+</div>
+
+<div class="info-modal" id="caliGuideModal">
+    <div class="info-modal-content cali-guide-content">
+        <h3 id="caliGuideTitle">Título</h3>
+        <div class="cali-guide-alias" id="caliGuideAlias"></div>
+        <div id="caliGuideMedia" class="info-media"></div>
+        <div id="caliGuideMuscles" class="guide-section"></div>
+        <ol class="cali-cues" id="caliGuideCues"></ol>
+        <p id="caliGuideTip">Dica.</p>
+        <a class="cali-video-btn" id="caliGuideVideo" href="#" target="_blank" rel="noopener noreferrer">Ver tutorial em vídeo</a>
+        <button type="button" class="save-btn" id="closeCaliGuide">Entendi</button>
+    </div>
+</div>
+
+<div class="cali-overlay" id="caliDayModal">
+    <div class="cali-sheet">
+        <div class="cali-sheet-handle"></div>
+        <div class="cali-sheet-head">
+            <h3 id="caliDayTitle">Treino</h3>
+            <button id="closeCaliDay" class="icon-btn" aria-label="Fechar">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg>
+            </button>
+        </div>
+        <div id="caliDayBody"></div>
+    </div>
+</div>
+
+<script type="module" src="js/app.js"></script>
+<script type="module" src="js/calisthenics.js"></script>
+</body>
+</html>
