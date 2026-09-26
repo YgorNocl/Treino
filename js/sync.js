@@ -1,19 +1,40 @@
 import { syncToCloud } from './data.js';
 
-export function trySync() {
+// Cada série registrada pede um backup; em vez de subir tudo a cada toque,
+// espera um pouco e manda uma vez só. Os envios saem em fila, na ordem.
+const SYNC_DELAY_MS = 2000;
+let syncTimer = null;
+let syncChain = Promise.resolve();
+
+function runSync() {
+  syncTimer = null;
   updateSyncStatus('syncing');
-  try {
-    const result = syncToCloud();
-    if (result && typeof result.then === 'function') {
-      result
-        .then(() => updateSyncStatus('success'))
-        .catch(e => { console.warn("Sincronização em nuvem offline:", e); updateSyncStatus('error'); });
-    }
-  } catch (e) {
-    console.warn("Sincronização em nuvem offline:", e);
-    updateSyncStatus('error');
-  }
+  syncChain = syncChain
+    .then(() => syncToCloud())
+    .then(() => updateSyncStatus('success'))
+    .catch(e => { console.warn("Sincronização em nuvem offline:", e); updateSyncStatus('error'); });
+  return syncChain;
 }
+
+export function trySync() {
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(runSync, SYNC_DELAY_MS);
+}
+
+// Envia na hora (botão "Fazer Backup Agora" ou app indo para segundo plano).
+export function syncNow() {
+  clearTimeout(syncTimer);
+  return runSync();
+}
+
+export function cancelPendingSync() {
+  clearTimeout(syncTimer);
+  syncTimer = null;
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden' && syncTimer) syncNow();
+});
 
 export function updateSyncStatus(state) {
   const dot = document.getElementById('syncStatusDot');

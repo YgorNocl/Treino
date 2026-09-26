@@ -49,3 +49,21 @@ export function getWeekEnd(weekStartStr) {
   date.setDate(date.getDate() + 6);
   return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
 }
+// Estado vazio com um desenho "fantasma" em cinza: 'chart' (linha de evolução)
+// ou 'list' (linhas de histórico com mini gráfico).
+export function emptyStateHtml(kind, title, text = '') {
+  const art = kind === 'list'
+    ? `<svg viewBox="0 0 240 120" aria-hidden="true">${[0, 1, 2].map(i => {
+        const y = 8 + i * 40;
+        return `<rect x="0" y="${y}" width="240" height="32" rx="9" class="es-box"/>`
+          + `<rect x="12" y="${y + 9}" width="${[84, 64, 96][i]}" height="6" rx="3" class="es-bar"/>`
+          + `<rect x="12" y="${y + 20}" width="40" height="4" rx="2" class="es-bar dim"/>`
+          + `<polyline points="${[[150, 22], [165, 16], [180, 19], [195, 11], [210, 13]].map(([x, yy]) => `${x},${y + yy - 4 + i * 2}`).join(' ')}" class="es-line"/>`;
+      }).join('')}</svg>`
+    : `<svg viewBox="0 0 240 120" aria-hidden="true">
+        ${[20, 50, 80, 110].map(y => `<line x1="0" x2="240" y1="${y}" y2="${y}" class="es-grid"/>`).join('')}
+        <polyline points="10,92 50,80 90,84 130,60 170,52 210,34 230,28" class="es-line"/>
+        ${[[10, 92], [50, 80], [90, 84], [130, 60], [170, 52], [210, 34]].map(([x, y]) => `<circle cx="${x}" cy="${y}" r="4" class="es-dot"/>`).join('')}
+      </svg>`;
+  return `<div class="empty-state">${art}<strong>${title}</strong>${text ? `<span>${text}</span>` : ''}</div>`;
+}

@@ -63,7 +63,6 @@ h1 span { color: var(--accent); }
 
 .subtitle { color: var(--accent); font-size: 12px; margin-top: 4px; font-family: var(--font-mono); font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
 
-.streak-badge { display: inline-flex; align-items: center; gap: 4px; margin-top: 10px; background: rgba(204, 255, 51, 0.08); border: 1px solid var(--accent-dim); color: var(--accent); font-family: var(--font-mono); font-size: 11px; font-weight: 700; padding: 6px 10px; border-radius: 999px; }
 
 .pr-badge { display: inline-block; white-space: nowrap; background: rgba(var(--accent-rgb), 0.12); color: var(--accent); font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; cursor: pointer; transition: 0.2s; }
 .pr-badge:active { transform: scale(0.95); opacity: 0.8; }
@@ -93,10 +92,14 @@ h1 span { color: var(--accent); }
 .session-track { height: 6px; background: rgba(255, 255, 255, 0.05); border-radius: 4px; overflow: hidden; }
 .session-fill { height: 100%; width: 0%; background: var(--accent); transition: width 0.4s cubic-bezier(0.2, 0.8, 0.2, 1); }
 
-.workout-timer { font-family: var(--font-mono); font-size: 14px; font-weight: 700; color: var(--accent); background: rgba(204, 255, 51, 0.1); padding: 4px 10px; border-radius: 8px; border: 1px solid var(--accent-dim); letter-spacing: 1px; }
+.workout-timer { font-family: var(--font-mono); font-size: 14px; font-weight: 700; color: var(--accent); background: rgba(var(--accent-rgb), 0.1); padding: 4px 10px; border-radius: 8px; border: 1px solid var(--accent-dim); letter-spacing: 1px; }
 
 .exercise-card { background: var(--card); border: 1px solid var(--card-border); border-radius: var(--radius); margin-bottom: 16px; overflow: hidden; transition: border-color 0.3s; }
-.exercise-card.done { border-color: var(--accent-dim); opacity: 0.8; }
+.exercise-card.done { border-color: rgba(76, 175, 80, 0.55); background: linear-gradient(rgba(76, 175, 80, 0.05), rgba(76, 175, 80, 0.05)), var(--card); }
+/* Pulado hoje: borda tracejada e texto apagado. */
+.exercise-card.skipped { border-style: dashed; }
+.exercise-card.skipped .exercise-title { color: var(--text-dim); }
+.exercise-card.skipped .exercise-prog { color: var(--text-faint); }
 
 .exercise-header { display: flex; justify-content: space-between; align-items: center; padding: 22px 20px; gap: 14px; cursor: pointer; background: transparent; }
 .exercise-info { display: flex; flex-direction: column; gap: 6px; width: 100%; }
@@ -106,6 +109,8 @@ h1 span { color: var(--accent); }
 .exercise-title-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .exercise-prog { display: flex; align-items: center; flex-wrap: wrap; row-gap: 4px; column-gap: 8px; font-family: var(--font-mono); font-size: 13px; color: var(--text-dim); font-weight: 600; transition: color 0.3s; }
 .exercise-card.done .exercise-prog { color: var(--success); }
+/* Concluído: selo ✓ verde antes do "3/3 séries concluídas" (academia, calistenia e mobilidade). */
+.exercise-card.done .exercise-prog > span:first-child::before { content: '✓'; display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; background: var(--success); color: #0f1113; font-size: 11px; font-weight: 800; margin-right: 6px; vertical-align: -3px; }
 
 .info-icon { background: rgba(255, 255, 255, 0.05); color: var(--text-dim); border: 1px solid var(--card-border); width: 26px; height: 26px; border-radius: 50%; font-size: 12px; font-weight: bold; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: background 0.2s, color 0.2s; }
 .info-icon:active { background: var(--accent-dim); color: #0f1113; border-color: var(--accent-dim); }
@@ -144,3 +149,35 @@ h1 span { color: var(--accent); }
 .notes-row.visible { display: block; }
 .notes-input { width: 100%; background: var(--bg); border: 1px dashed var(--card-border); color: var(--text-dim); padding: 14px; border-radius: 12px; font-size: 14px; font-family: var(--font-body); text-align: center; }
 .notes-input:focus { outline: none; border-color: var(--accent-dim); color: var(--text); border-style: solid;}
+/* Menu "⋯" do topo: Catálogo, Medidas e Configurações */
+.top-menu-wrap { position: relative; }
+.top-menu { position: absolute; top: calc(100% + 8px); right: 0; min-width: 200px; background: rgba(26, 29, 33, 0.97); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); border: 1px solid var(--card-border); border-radius: 14px; padding: 6px; z-index: 80; box-shadow: 0 12px 40px rgba(0,0,0,0.55); opacity: 0; pointer-events: none; transform: translateY(-6px); transition: opacity 0.18s, transform 0.18s; }
+.top-menu.open { opacity: 1; pointer-events: auto; transform: translateY(0); }
+.top-menu-item { display: flex; align-items: center; gap: 12px; width: 100%; background: none; border: none; color: var(--text); font-family: var(--font-body); font-size: 14px; font-weight: 600; padding: 12px; border-radius: 10px; cursor: pointer; text-align: left; }
+.top-menu-item svg { width: 18px; height: 18px; color: var(--text-dim); flex-shrink: 0; }
+.top-menu-item:active { background: rgba(255,255,255,0.06); }
+
+/* Série recém-registrada: a bolinha "enche" com um pulinho. */
+@keyframes setDotPop {
+  0% { transform: scale(0.7); background: rgba(var(--accent-rgb), 0.25); }
+  60% { transform: scale(1.08); }
+  100% { transform: scale(1); }
+}
+.set-dot.pop { animation: setDotPop 0.35s cubic-bezier(0.2, 0.8, 0.2, 1); }
+@media (prefers-reduced-motion: reduce) { .set-dot.pop { animation: none; } }
+
+/* Série feita mostra carga × reps (toque para corrigir ou apagar). */
+.set-dot.filled { padding: 0 2px; }
+.set-dot-value { font-size: 14px; white-space: nowrap; letter-spacing: -0.3px; }
+.set-dot-value.small { font-size: 11px; }
+
+/* Linha de ações secundárias do card: ajustes de máquina e "Pular hoje". */
+.card-links { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 8px; }
+.card-links .add-notes-btn { width: auto; margin-top: 0; }
+.skip-btn { margin-left: auto; background: none; border: none; color: var(--text-faint); font-family: var(--font-body); font-size: 13px; font-weight: 600; cursor: pointer; padding: 6px 0; }
+.skip-btn:active { color: var(--text); }
+.save-btn.secondary-btn { width: 100%; background: var(--card-border); color: var(--text); }
+
+/* Card pulado: botão visível para trazer o exercício de volta, sem abrir o card. */
+.unskip-chip { background: rgba(var(--accent-rgb), 0.12); color: var(--accent); border: 1px solid var(--accent-dim); border-radius: 999px; padding: 4px 10px; font-family: var(--font-body); font-size: 12px; font-weight: 700; cursor: pointer; }
+.unskip-chip:active { transform: scale(0.96); }

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'treino-cache-v21';
+const CACHE_NAME = 'treino-cache-v32';
 const MEDIA_CACHE = 'treino-media-v1';
 const MEDIA_HOST = 'raw.githubusercontent.com';
 const APP_SHELL = [
@@ -8,12 +8,15 @@ const APP_SHELL = [
   './css/panel-modals.css',
   './js/app.js',
   './js/data.js',
-  './js/store.js',
   './js/sync.js',
   './js/utils.js',
   './js/body-map.js',
   './js/rest-timer.js',
-  './js/charts.js',
+  './js/share-card.js',
+  './js/set-editor.js',
+  './js/dialog.js',
+  './js/back-nav.js',
+  './js/summary.js',
   './css/calisthenics.css',
   './js/calisthenics.js',
   './js/calisthenics-data.js',

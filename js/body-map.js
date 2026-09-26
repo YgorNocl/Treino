@@ -9,10 +9,14 @@ const ANTERIOR = [
   { muscle: 'biceps', points: ['16.7 68.2 18 71.4 22.9 66.1 29 53.9 27.8 49.4 20.4 55.9', '71.4 49.4 70.2 54.7 76.3 66.1 81.6 71.8 82.9 69 78.8 55.5'] },
   { muscle: 'triceps', points: ['69.4 55.5 69.4 61.6 75.9 72.7 77.6 70.2 75.5 67.3', '22.4 69.4 29.8 55.5 29.8 60.8 22.9 73.1'] },
   { muscle: 'neck', points: ['55.5 23.7 50.6 33.5 50.6 39.2 61.6 40 70.6 44.9 69.4 36.7 63.3 35.1 58.4 30.6', '29 44.9 30.2 37.1 36.3 35.1 41.2 30.2 44.5 24.5 49 33.9 48.6 39.2 38 39.6'] },
-  { muscle: 'front-deltoids', points: ['78.4 53.1 79.6 47.8 79.2 41.2 75.9 38 71 36.3 72.2 42.9 71.4 47.3', '28.2 47.3 21.2 53.1 20 47.8 20.4 40.8 24.5 37.1 28.6 37.1 26.9 43.3'] },
+  { muscle: 'front-deltoids', points: ['75.9 38 71 36.3 72.2 42.9 71.4 47.3 78.4 53.1 75.5 47', '24.5 37.1 28.6 37.1 26.9 43.3 28.2 47.3 21.2 53.1 24.3 47'] },
+  { muscle: 'side-deltoids', points: ['75.9 38 79.2 41.2 79.6 47.8 78.4 53.1 75.5 47', '24.5 37.1 20.4 40.8 20 47.8 21.2 53.1 24.3 47'] },
   { muscle: 'head', points: ['42.4 2.9 40 11.8 42 19.6 46.1 23.3 49.8 25.3 54.7 22.4 57.6 19.2 59.2 10.2 57.1 2.4 49.8 0'] },
   { muscle: 'abductors', points: ['52.7 110.2 54.3 124.9 60 110.2 62 100 64.9 94.3 60 92.7 56.7 104.5', '47.8 110.6 44.9 125.3 42 115.9 40.4 113.1 39.6 107.3 38 102.4 34.7 93.9 39.6 92.2 41.6 99.2 43.7 105.3'] },
-  { muscle: 'quadriceps', points: ['34.7 98.8 37.1 108.2 37.1 127.8 34.3 137.1 31 132.7 29.4 120 28.2 111.4 29.4 100.8 32.2 94.7', '63.3 105.7 64.5 100 66.9 94.7 70.2 101.2 71 111.8 68.2 133.1 65.3 137.6 62.4 128.6 62 111.4', '38.8 129.4 38.4 112.2 41.2 118.4 44.5 129.4 42.9 135.1 40 146.1 36.3 146.5 35.5 140', '59.6 145.7 55.5 129 60.8 113.9 61.2 130.2 64.1 139.6 62.9 146.5', '32.7 138.4 26.5 145.7 25.7 136.7 25.7 127.3 26.9 114.3 29.4 133.5', '71.8 113.1 73.9 124.1 73.9 140.4 72.7 145.7 66.5 138.4 70.2 133.5'] },
+  { muscle: 'rectus-femoris', points: ['34.7 98.8 37.1 108.2 37.1 127.8 34.3 137.1 31 132.7 29.4 120 28.2 111.4 29.4 100.8 32.2 94.7', '63.3 105.7 64.5 100 66.9 94.7 70.2 101.2 71 111.8 68.2 133.1 65.3 137.6 62.4 128.6 62 111.4'] },
+  // Tensor da fáscia lata: lateral do quadril, por fora do reto femoral
+  { muscle: 'tfl', points: ['32.2 94.7 29.4 100.8 28.2 111.4 26.9 114.3 25.6 106 27.6 97.5', '66.9 94.7 70.2 101.2 71 111.8 71.8 113.1 73.8 106 72.2 97.5'] },
+  { muscle: 'quadriceps', points: ['38.8 129.4 38.4 112.2 41.2 118.4 44.5 129.4 42.9 135.1 40 146.1 36.3 146.5 35.5 140', '59.6 145.7 55.5 129 60.8 113.9 61.2 130.2 64.1 139.6 62.9 146.5', '32.7 138.4 26.5 145.7 25.7 136.7 25.7 127.3 26.9 114.3 29.4 133.5', '71.8 113.1 73.9 124.1 73.9 140.4 72.7 145.7 66.5 138.4 70.2 133.5'] },
   { muscle: 'knees', points: ['33.9 140 34.7 143.3 35.5 147.3 36.3 151 35.1 156.7 29.8 156.7 27.3 152.7 27.3 147.3 30.2 144.1', '65.7 140 72.2 147.8 72.2 152.2 69.8 157.1 64.9 156.7 62.9 151'] },
   { muscle: 'calves', points: ['71.4 160.4 73.5 153.5 76.7 161.2 79.6 167.8 78.4 187.8 79.6 195.5 74.7 195.5', '24.9 194.7 27.8 164.9 28.2 160.4 26.1 154.3 24.9 157.6 22.4 161.6 20.8 167.8 22 188.2 20.8 195.5', '72.7 195.1 69.8 159.2 65.3 158.4 64.1 162.4 64.1 165.3 65.7 177.1', '35.5 158.4 35.9 162.4 35.9 166.9 35.1 172.2 35.1 176.7 32.2 182 30.6 187.3 26.9 194.7 27.3 187.8 28.2 180.4 28.6 175.5 29 169.8 29.8 164.1 30.2 158.8'] },
   { muscle: 'forearm', points: ['6.1 88.6 10.2 75.1 14.7 70.2 16.3 74.3 19.2 73.5 4.5 97.6 0 100', '84.5 69.8 83.3 73.5 80 73.1 95.1 98.4 100 100.4 93.5 89.4 89.8 76.3', '77.6 72.2 77.6 77.6 80.4 84.1 85.3 89.8 92.2 101.2 94.7 99.6', '6.9 101.2 13.5 90.6 18.8 84.1 21.6 77.1 21.2 71.8 4.9 98.8'] }
@@ -21,11 +25,13 @@ const ANTERIOR = [
 const POSTERIOR = [
   { muscle: 'head', points: ['50.6 0 46 0.9 40.9 5.5 40.4 12.8 45.1 20 55.7 20 59.1 13.6 59.6 4.7 55.7 1.3'] },
   { muscle: 'trapezius', points: ['44.7 21.7 47.7 21.7 47.2 38.3 47.7 64.7 38.3 53.2 35.3 40.9 31.1 36.6 39.1 33.2 43.8 27.2', '52.3 21.7 55.7 21.7 56.6 27.2 60.9 32.8 68.9 36.6 64.7 40.4 61.7 53.2 52.3 64.7 53.2 38.3'] },
-  { muscle: 'back-deltoids', points: ['29.4 37 23 39.1 17.4 44.3 18.3 53.6 24.3 49.4 27.2 46.4', '71.1 37 78.3 39.6 82.6 44.7 81.7 53.6 74.9 48.9 72.3 45.1'] },
+  { muscle: 'back-deltoids', points: ['29.4 37 23 39.1 21.5 45 21.3 51.5 24.3 49.4 27.2 46.4', '71.1 37 78.3 39.6 78.5 45 78.3 51.25 74.9 48.9 72.3 45.1'] },
+  { muscle: 'side-deltoids', points: ['23 39.1 17.4 44.3 18.3 53.6 21.3 51.5 21.5 45', '78.3 39.6 82.6 44.7 81.7 53.6 78.3 51.25 78.5 45'] },
   { muscle: 'upper-back', points: ['31.1 38.7 28.1 48.9 28.5 55.3 34 75.3 47.2 71.1 47.2 66.4 36.6 54 33.6 41.3', '68.9 38.7 71.9 49.4 71.5 56.2 66 75.3 52.8 71.1 52.8 66.4 63.4 54.5 66.4 41.7'] },
   { muscle: 'triceps', points: ['26.8 49.8 17.9 55.7 14.5 72.3 16.6 81.7 21.7 63.8 26.8 55.7', '73.6 50.2 82.1 55.7 86 73.2 83.4 82.1 77.9 63 73.2 55.7', '26.8 58.3 26.8 68.5 23 75.3 19.1 77.4 22.6 65.5', '72.8 58.3 77 64.7 80.4 77.4 76.6 75.3 72.8 68.9'] },
   { muscle: 'lower-back', points: ['47.7 72.8 34.5 77 35.3 83.4 49.4 102.1 46.8 83', '52.3 72.8 65.5 77 64.7 83.4 50.6 102.1 53.2 83.8'] },
   { muscle: 'forearm', points: ['86.4 75.7 91.1 83.4 93.2 94 100 106.4 96.2 104.3 88.1 89.4 84.3 83.8', '13.6 75.7 8.9 83.8 6.8 93.6 0 106.4 3.8 104.3 12.3 88.5 15.7 83', '81.3 79.6 77.4 77.9 79.1 84.7 91.1 103.8 93.2 108.9 94.5 104.7', '18.7 79.6 22.1 77.9 20.9 84.3 9.4 103 6.8 108.5 5.1 104.7'] },
+  { muscle: 'glute-med', points: ['30.4 97 33 92.5 36.5 93.3 39.6 96.4 37.45 104.05 30.2 108.5 29.6 103.5', '69.6 97 67 92.5 63.5 93.3 60.4 96.4 62.35 103.8 69.4 108.5 70.4 103.5'] },
   { muscle: 'gluteal', points: ['44.7 99.6 30.2 108.5 29.8 118.7 31.5 126 47.2 121.3 49.4 114.9', '55.3 99.1 51.1 114.5 52.3 120.9 68.1 126 69.8 119.1 69.4 108.5'] },
   { muscle: 'adductor', points: ['48.1 123 44.7 123 41.3 125.5 45.1 144.3 48.5 135.7 48.9 129.4', '51.9 122.6 55.7 123.4 59.1 126 54.9 144.3 51.9 136.2 51.1 129.4'] },
   { muscle: 'hamstring', points: ['28.9 122.1 31.1 129.4 36.6 126 35.3 135.3 34.5 150.2 29.4 158.3 28.9 146.8 27.7 141.3 27.2 131.5', '71.5 121.7 69.4 128.9 63.8 126 65.5 136.6 66.4 150.2 71.1 158.3 71.5 147.7 72.8 142.1 73.6 131.9', '38.7 125.5 44.3 146 40.4 166.8 36.2 152.8 37 135.3', '61.7 125.5 63.4 136.2 64.3 153.2 60 166.8 56.2 146.4'] },
@@ -35,32 +41,41 @@ const POSTERIOR = [
   { muscle: 'right-soleus', points: ['69.8 195.7 71.9 195.7 73.6 198.3 71.9 213.2 70.2 219.6 67.2 202.1'] }
 ];
 
-// Nomes usados no app -> regiões do desenho. Não há deltoide lateral separado no
-// desenho, então ele usa o ombro da vista de frente; adutores usam a parte interna
-// da coxa vista de frente.
+// Nomes usados no app -> regiões do desenho. Regiões desenhadas além das
+// originais: deltoide lateral (borda externa do ombro, nas duas vistas), glúteo
+// médio (acima e por fora do máximo), tensor da fáscia lata (lateral do quadril)
+// e reto femoral (centro da coxa, separado do resto do quadríceps).
+// Adutores = parte interna da coxa, visível de frente e de costas.
 const REGIONS = {
   'Peito': ['chest'],
   'Peitoral': ['chest'],
-  'Ombros': ['front-deltoids', 'back-deltoids'],
+  'Ombros': ['front-deltoids', 'side-deltoids', 'back-deltoids'],
   'Ombro Anterior': ['front-deltoids'],
-  'Ombro Lateral': ['front-deltoids'],
+  'Ombro Lateral': ['side-deltoids'],
+  'Ombro Posterior': ['back-deltoids'],
+  'Trapézio': ['trapezius'],
+  'Antebraço': ['forearm'],
   'Bíceps': ['biceps'],
   'Tríceps': ['triceps'],
   'Punhos e Antebraços': ['forearm'],
   'Cotovelos': ['forearm'],
   'Costas': ['upper-back', 'trapezius'],
   'Escápulas': ['upper-back', 'trapezius'],
-  'Coluna Torácica': ['upper-back'],
+  'Meio das Costas': ['upper-back'],
   'Lombar': ['lower-back'],
   'Abdômen': ['abs'],
   'Oblíquos': ['obliques'],
   'Core': ['abs', 'obliques'],
-  'Flexores do Quadril': ['abductors'],
-  'Quadril': ['gluteal', 'abductors', 'adductor'],
-  'Glúteo': ['gluteal'],
-  'Glúteos': ['gluteal'],
-  'Adutores': ['abductors'],
-  'Quadríceps': ['quadriceps'],
+  'Flexores do Quadril': ['abductors', 'rectus-femoris', 'tfl'],
+  'Quadril': ['gluteal', 'glute-med', 'tfl', 'abductors', 'adductor'],
+  'Glúteo': ['gluteal', 'glute-med'],
+  'Glúteos': ['gluteal', 'glute-med'],
+  'Glúteo Máximo': ['gluteal'],
+  'Glúteo Médio': ['glute-med'],
+  'Lateral do Quadril': ['tfl'],
+  'Adutores': ['abductors', 'adductor'],
+  'Quadríceps': ['quadriceps', 'rectus-femoris'],
+  'Reto Femoral': ['rectus-femoris'],
   'Posterior de Coxa': ['hamstring'],
   'Panturrilha': ['calves', 'left-soleus', 'right-soleus'],
   'Tornozelos': ['left-soleus', 'right-soleus']
@@ -72,11 +87,22 @@ const VIEWS = [
 ];
 
 // Faixas verticais do desenho (unidades do SVG). Os pés vão até ~220, além dos
-// 200 originais, por isso o corpo inteiro usa 222.
+// 200 originais, por isso o corpo inteiro usa 222. O recorte de pernas começa
+// na cintura (abdômen baixo / lombar visíveis), para as pernas não parecerem soltas.
+// x/w: no recorte de pernas os braços ficam escondidos, então a faixa lateral
+// deles é cortada e as pernas ocupam a caixa inteira.
 const CROPS = {
-  upper: { y: 0, h: 128, scale: 1.3 },
-  lower: { y: 86, h: 136, scale: 1.35 },
-  full: { y: 0, h: 222, scale: 1 }
+  upper: { x: 0, w: 100, y: 0, h: 128 },
+  lower: { x: 18, w: 64, y: 62, h: 160 },
+  full: { x: 0, w: 100, y: 0, h: 222 }
+};
+
+// Escala (px por unidade do desenho) por recorte, com uma vista só ou frente +
+// costas. O CSS limita a 100% da caixa em telas estreitas.
+const FIGURE_SCALE = {
+  upper: { one: 1.9, two: 1.5 },
+  lower: { one: 1.9, two: 1.65 },
+  full: { one: 1.3, two: 1.15 }
 };
 
 const pointsOf = str => {
@@ -123,12 +149,21 @@ function pickCrop(views, level) {
   return 'full';
 }
 
-function figureSvg(view, level, cropName) {
+// No recorte de pernas os braços (soltos ao lado do tronco) viram pedaços
+// cortados: some com eles quando não estão destacados.
+const HIDDEN_IN_CROP = { lower: new Set(['forearm', 'biceps', 'triceps']), upper: new Set(), full: new Set() };
+
+// Corpo sólido: uma camada de "silhueta" (os mesmos polígonos com contorno
+// grosso na cor do corpo) preenche os vãos entre as peças; por cima vêm os
+// músculos, e o que sobra dos vãos vira a linha fina que separa cada um.
+function figureSvg(view, level, cropName, scale) {
   const crop = CROPS[cropName];
-  const polygons = view.parts
+  const parts = view.parts.filter(part => !(HIDDEN_IN_CROP[cropName].has(part.muscle) && level(part.muscle) === 'idle'));
+  const base = parts.map(part => part.points.map(points => `<polygon points="${points}"/>`).join('')).join('');
+  const muscles = parts
     .map(part => part.points.map(points => `<polygon class="bm-${level(part.muscle)}" points="${points}"/>`).join(''))
     .join('');
-  return `<figure class="body-map-figure bm-crop-${cropName}"><svg viewBox="0 ${crop.y} 100 ${crop.h}" width="${Math.round(100 * crop.scale)}" role="img" aria-label="${view.label}">${polygons}</svg><figcaption>${view.label}</figcaption></figure>`;
+  return `<figure class="body-map-figure bm-crop-${cropName}"><svg viewBox="${crop.x} ${crop.y} ${crop.w} ${crop.h}" width="${Math.round(crop.w * scale)}" role="img" aria-label="${view.label}"><g class="bm-base">${base}</g>${muscles}</svg><figcaption>${view.label}</figcaption></figure>`;
 }
 
 const LEVEL_RANK = { idle: 0, secondary: 1, primary: 2, over: 3 };
@@ -151,7 +186,8 @@ export function bodyMapHtml(levels, { fit = true } = {}) {
   const level = muscle => levels.get(muscle) || 'idle';
   const views = fit ? pickViews(new Set(levels.keys()), level) : VIEWS;
   const crop = fit ? pickCrop(views, level) : 'full';
-  return `<div class="body-map">${views.map(view => figureSvg(view, level, crop)).join('')}</div>`;
+  const scale = FIGURE_SCALE[crop][views.length === 1 ? 'one' : 'two'];
+  return `<div class="body-map">${views.map(view => figureSvg(view, level, crop, scale)).join('')}</div>`;
 }
 
 // Bloco "Músculos trabalhados" dos guias: principal em destaque forte, auxiliares
@@ -168,4 +204,33 @@ export function musclesHtml(primary, secondary, title = 'Músculos trabalhados')
     <span class="guide-label">${title}</span>
     ${bodyMapHtml(regionLevels(levelByName))}
     <div class="bm-names">${names}</div>`;
+}
+
+// Espessura (em unidades do desenho) do contorno da silhueta que fecha os vãos.
+export const BODY_GAP_FILL = 2.6;
+
+// Desenha frente e costas inteiras num canvas (imagem do resumo do treino), no
+// mesmo estilo sólido do SVG. `colors` = { body, idle, secondary, primary, over };
+// `height` = altura de cada corpo em px.
+export function drawBodyMap(ctx, levels, { x, y, height, gap, colors }) {
+  const scale = height / CROPS.full.h;
+  const tracePolygon = (ox, str) => {
+    const pts = pointsOf(str);
+    ctx.beginPath();
+    pts.forEach(([px, py], j) => (j ? ctx.lineTo : ctx.moveTo).call(ctx, ox + px * scale, y + py * scale));
+    ctx.closePath();
+  };
+  VIEWS.forEach((view, i) => {
+    const ox = x + i * (100 * scale + gap);
+    ctx.fillStyle = colors.body;
+    ctx.strokeStyle = colors.body;
+    ctx.lineWidth = BODY_GAP_FILL * scale;
+    ctx.lineJoin = 'round';
+    view.parts.forEach(part => part.points.forEach(str => { tracePolygon(ox, str); ctx.fill(); ctx.stroke(); }));
+    view.parts.forEach(part => {
+      ctx.fillStyle = colors[levels.get(part.muscle) || 'idle'];
+      part.points.forEach(str => { tracePolygon(ox, str); ctx.fill(); });
+    });
+  });
+  return 2 * 100 * scale + gap; // largura total desenhada
 }

@@ -10,12 +10,14 @@ input[type=number]::-webkit-outer-spin-button {
 .rest-overlay { position: fixed; left: 0; right: 0; bottom: 0; z-index: 100; display: flex; justify-content: center; padding: 0 12px calc(12px + env(safe-area-inset-bottom)); pointer-events: none; visibility: hidden; transform: translateY(calc(100% + 24px)); transition: transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1), visibility 0s linear 0.35s; }
 .rest-overlay.visible { visibility: visible; transform: translateY(0); transition: transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1); }
 .rest-card { pointer-events: auto; position: relative; overflow: hidden; width: 100%; max-width: 496px; background: rgba(22, 25, 29, 0.94); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border: 1px solid var(--card-border); border-radius: 20px; padding: 16px 16px 14px; box-shadow: 0 -8px 30px rgba(0, 0, 0, 0.45); }
-.rest-progress { position: absolute; top: 0; left: 0; right: 0; height: 3px; background: rgba(255, 255, 255, 0.06); }
-.rest-progress-fill { height: 100%; background: var(--accent); transform-origin: left center; transition: transform 0.25s linear; }
+/* Anel do descanso: --p vai de 1 (cheio) a 0, definido pelo JS a cada tick. */
+@property --p { syntax: '<number>'; inherits: true; initial-value: 1; }
+.rest-ring { --p: 1; position: relative; width: 84px; height: 84px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: --p 0.25s linear; }
+.rest-ring::before { content: ''; position: absolute; inset: 0; border-radius: 50%; background: conic-gradient(var(--accent) calc(var(--p) * 360deg), rgba(255, 255, 255, 0.07) 0); -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 6px), #000 calc(100% - 5px)); mask: radial-gradient(farthest-side, transparent calc(100% - 6px), #000 calc(100% - 5px)); }
 .rest-main { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .rest-info { flex: 1; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .rest-tag { display: block; margin-bottom: 8px; font-family: var(--font-mono); color: var(--text-dim); letter-spacing: 1px; font-size: 10px; font-weight: 600; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.rest-time { font-family: var(--font-display); font-size: 30px; line-height: 1; color: var(--text); font-variant-numeric: tabular-nums; }
+.rest-time { font-family: var(--font-display); font-size: 22px; line-height: 1; color: var(--text); font-variant-numeric: tabular-nums; }
 .rest-actions { display: flex; gap: 8px; flex-shrink: 0; }
 .rest-btn { background: rgba(255, 255, 255, 0.05); color: var(--text); border: 1px solid var(--card-border); padding: 11px 12px; min-width: 54px; border-radius: 12px; font-family: var(--font-mono); font-weight: 700; font-size: 13px; cursor: pointer; transition: 0.2s; }
 .rest-btn:active { transform: scale(0.95); }
@@ -23,8 +25,8 @@ input[type=number]::-webkit-outer-spin-button {
 .rest-presets { display: flex; gap: 6px; margin-top: 12px; }
 .preset-btn { flex: 1; background: rgba(255, 255, 255, 0.04); border: 1px solid var(--card-border); color: var(--text-dim); padding: 7px 0; border-radius: 8px; font-family: var(--font-mono); font-size: 12px; font-weight: 600; cursor: pointer; transition: 0.2s; }
 .preset-btn.active { background: rgba(var(--accent-rgb), 0.1); color: var(--accent); border-color: var(--accent-dim); }
-body:has(.rest-overlay.visible) .app { padding-bottom: 170px; }
-body:has(.rest-overlay.visible) .toast-notification.show { bottom: calc(160px + env(safe-area-inset-bottom)); }
+body:has(.rest-overlay.visible) .app { padding-bottom: 190px; }
+body:has(.rest-overlay.visible) .toast-notification.show { bottom: calc(180px + env(safe-area-inset-bottom)); }
 
 .sheet-backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.6); backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); display: none; z-index: 90; transition: opacity 0.3s; }
 .sheet-backdrop.visible { display: block; }
@@ -182,7 +184,7 @@ body:has(.rest-overlay.visible) .toast-notification.show { bottom: calc(160px + 
 .evo-set-block { display: flex; flex-direction: column; align-items: center; gap: 5px; background: rgba(0,0,0,0.3); border: 1px solid var(--card-border); border-radius: 12px; padding: 8px 14px; flex: 1; min-width: 84px; }
 .evo-set-label { font-family: var(--font-mono); font-size: 9px; font-weight: 700; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.5px; }
 .evo-set-value { font-family: var(--font-mono); font-weight: 700; font-size: 13px; color: var(--text); }
-.evo-set-block.best { border-color: var(--accent-dim); background: rgba(204, 255, 51, 0.08); box-shadow: inset 0 1px 1px rgba(255,255,255,0.1); }
+.evo-set-block.best { border-color: var(--accent-dim); background: rgba(var(--accent-rgb), 0.08); box-shadow: inset 0 1px 1px rgba(255,255,255,0.1); }
 .evo-set-block.best .evo-set-label { color: var(--accent); }
 .evo-set-block.best .evo-set-value { color: var(--accent); }
 
@@ -199,7 +201,7 @@ body:has(.rest-overlay.visible) .toast-notification.show { bottom: calc(160px + 
 .evo-sets-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .evo-set-chip { font-family: var(--font-mono); font-weight: 700; font-size: 13px; background: rgba(0,0,0,0.3); border: 1px solid var(--card-border); border-radius: 9px; padding: 9px 12px; color: var(--text); }
 .evo-set-chip-x { color: var(--text-faint); font-weight: 400; }
-.evo-set-chip.best { border-color: var(--accent-dim); color: var(--accent); background: rgba(204, 255, 51, 0.08); box-shadow: inset 0 1px 1px rgba(255,255,255,0.1); }
+.evo-set-chip.best { border-color: var(--accent-dim); color: var(--accent); background: rgba(var(--accent-rgb), 0.08); box-shadow: inset 0 1px 1px rgba(255,255,255,0.1); }
 
 .evo-show-more-btn { width: 100%; margin-top: 10px; padding: 14px; background: transparent; border: 1px dashed var(--card-border); border-radius: 12px; color: var(--text-dim); font-family: var(--font-mono); font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; cursor: pointer; transition: 0.2s; }
 .evo-show-more-btn:active { color: var(--accent); border-color: var(--accent-dim); background: rgba(255,255,255,0.02); }
@@ -230,10 +232,13 @@ body:has(.rest-overlay.visible) .toast-notification.show { bottom: calc(160px + 
 .body-map-figure svg { display: block; max-width: 100%; height: auto; }
 /* Onde o desenho é cortado, a borda some aos poucos em vez de cortar seco. */
 .bm-crop-upper svg { -webkit-mask-image: linear-gradient(to bottom, #000 82%, transparent); mask-image: linear-gradient(to bottom, #000 82%, transparent); }
-.bm-crop-lower svg { -webkit-mask-image: linear-gradient(to top, #000 86%, transparent); mask-image: linear-gradient(to top, #000 86%, transparent); }
+.bm-crop-lower svg { -webkit-mask-image: linear-gradient(to top, #000 92%, transparent); mask-image: linear-gradient(to top, #000 92%, transparent); }
 .body-map-figure figcaption { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.5px; text-transform: uppercase; color: var(--text-faint); }
-.bm-idle { fill: rgba(255, 255, 255, 0.1); }
-.bm-secondary { fill: rgba(var(--accent-rgb), 0.42); }
+/* Corpo sólido: silhueta (--bm-body) fecha os vãos; músculos (--bm-muscle) por cima. */
+:root { --bm-body: #25282d; --bm-muscle: #3b3f45; }
+.bm-base polygon { fill: var(--bm-body); stroke: var(--bm-body); stroke-width: 2.6; stroke-linejoin: round; }
+.bm-idle { fill: var(--bm-muscle); }
+.bm-secondary { fill: rgba(var(--accent-rgb), 0.45); fill: color-mix(in srgb, var(--accent) 45%, var(--bm-muscle)); }
 .bm-primary { fill: var(--accent); }
 .bm-over { fill: var(--danger); }
 .vol-map { margin-bottom: 16px; }
@@ -266,7 +271,7 @@ body:has(.rest-overlay.visible) .toast-notification.show { bottom: calc(160px + 
 .summary-stat-value { font-family: var(--font-mono); font-weight: 700; font-size: 20px; color: var(--accent); white-space: nowrap; }
 .summary-stat-label { font-family: var(--font-mono); font-size: 9px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 6px; }
 
-.summary-prs { background: rgba(204, 255, 51, 0.06); border: 1px solid var(--accent-dim); border-radius: 14px; padding: 14px 16px; margin-bottom: 18px; }
+.summary-prs { background: rgba(var(--accent-rgb), 0.06); border: 1px solid var(--accent-dim); border-radius: 14px; padding: 14px 16px; margin-bottom: 18px; }
 .summary-prs-label { font-family: var(--font-mono); font-size: 12px; color: var(--accent); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px; }
 .summary-pr-row { display: flex; justify-content: space-between; align-items: center; font-size: 13px; color: var(--text); padding: 5px 0; }
 .summary-pr-value { font-family: var(--font-mono); font-weight: 700; color: var(--accent); }
@@ -313,9 +318,68 @@ body:has(.rest-overlay.visible) .toast-notification.show { bottom: calc(160px + 
 .body-input-unit { font-family: var(--font-mono); font-size: 12px; color: var(--text-dim); font-weight: 600; }
 
 .body-delta { font-size: 10px; font-family: var(--font-mono); font-weight: 700; z-index: 2; text-align: center; }
-.body-delta.pos { color: var(--success); }
-.body-delta.neg { color: var(--danger); }
-.body-delta.flat { color: var(--text-faint); }
+.body-delta.flat { color: var(--text-dim); }
 
-.body-spark { position: absolute; bottom: 0; left: 0; right: 0; height: 35px; opacity: 0.25; z-index: 1; pointer-events: none; }
+/* Mini gráfico abaixo do texto (antes ficava por cima, parecendo um riscado). */
+.body-spark { height: 24px; opacity: 0.45; pointer-events: none; }
 .body-spark svg { width: 100%; height: 100%; display: block; }
+/* Editor do treino (Configurações > Editar Exercícios) */
+.plan-list { display: flex; flex-direction: column; gap: 8px; }
+.plan-row { display: flex; align-items: center; gap: 10px; background: var(--card); border: 1px solid var(--card-border); border-radius: 14px; padding: 10px; }
+.plan-move { display: flex; flex-direction: column; gap: 4px; }
+.plan-name { flex: 1; min-width: 0; font-size: 14px; font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; }
+.plan-sets { display: flex; align-items: center; gap: 6px; }
+.plan-sets-num { display: flex; flex-direction: column; align-items: center; min-width: 34px; font-family: var(--font-mono); font-size: 16px; font-weight: 700; color: var(--accent); line-height: 1; }
+.plan-sets-num small { font-size: 9px; font-weight: 400; color: var(--text-faint); margin-top: 3px; }
+.plan-icon { width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; background: rgba(255,255,255,0.04); border: 1px solid var(--card-border); border-radius: 10px; color: var(--text); font-size: 18px; font-family: var(--font-mono); cursor: pointer; flex-shrink: 0; }
+.plan-move .plan-icon { width: 28px; height: 22px; border-radius: 7px; }
+.plan-icon:disabled { opacity: 0.25; cursor: default; }
+.plan-icon:active:not(:disabled) { transform: scale(0.94); }
+.plan-remove { color: var(--danger); }
+.plan-empty { font-size: 13px; color: var(--text-dim); text-align: center; padding: 20px 0; }
+.plan-input { width: 100%; background: rgba(255,255,255,0.03); border: 1px solid var(--card-border); color: var(--text); padding: 14px; border-radius: 12px; font-family: var(--font-body); font-size: 14px; margin-bottom: 10px; }
+.plan-input option, .plan-input optgroup { background: var(--card); color: var(--text); }
+.plan-btn { width: 100%; background: var(--card-border); color: var(--text); margin-bottom: 8px; }
+.summary-share-btn { width: 100%; }
+
+/* Estados vazios com desenho "fantasma" */
+.empty-state { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 8px; padding: 28px 16px 24px; }
+.empty-state svg { width: 100%; max-width: 240px; height: auto; margin-bottom: 10px; }
+.empty-state strong { font-size: 14px; color: var(--text); font-weight: 700; }
+.empty-state span { font-size: 12px; color: var(--text-dim); line-height: 1.5; max-width: 260px; }
+.es-box { fill: rgba(255, 255, 255, 0.025); stroke: var(--card-border); }
+.es-bar { fill: rgba(255, 255, 255, 0.09); }
+.es-bar.dim { fill: rgba(255, 255, 255, 0.05); }
+.es-grid { stroke: rgba(255, 255, 255, 0.05); stroke-width: 1; }
+.es-line { fill: none; stroke: rgba(255, 255, 255, 0.16); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 6 7; }
+.es-dot { fill: #1a1d21; stroke: rgba(255, 255, 255, 0.2); stroke-width: 2; }
+.evo-chart-card .empty-state { padding: 12px 8px 8px; }
+
+/* Editor de série já feita */
+.set-edit-sub { font-size: 13px; color: var(--text-dim); margin: -6px 0 18px; }
+.set-edit-content .input-row { margin-bottom: 18px; }
+.set-edit-links { display: flex; justify-content: space-between; margin-top: 12px; }
+.set-edit-link { background: none; border: none; font-family: var(--font-body); font-size: 14px; font-weight: 600; color: var(--text-dim); cursor: pointer; padding: 8px 4px; }
+.set-edit-link.danger { color: var(--danger); }
+
+/* Janela de confirmação/aviso do app (no lugar do confirm/alert do navegador).
+   Fica acima de tudo, inclusive das telas cheias (Configurações, Editar Treino). */
+#appDialog { z-index: 400; }
+.app-dialog p { white-space: pre-line; margin-bottom: 20px; }
+.app-dialog-input { text-align: center; font-family: var(--font-mono); font-size: 18px; letter-spacing: 3px; text-transform: uppercase; margin-bottom: 16px; }
+.app-dialog .save-btn.danger { background: var(--danger); color: #fff; }
+.app-dialog-cancel { display: block; width: 100%; margin-top: 8px; text-align: center; }
+
+/* Meu Corpo: as 6 abas de medida em 2 linhas de 3 (antes a fileira saía da tela). */
+#bodyChartTabs { display: grid; grid-template-columns: repeat(3, 1fr); overflow: visible; }
+#bodyChartTabs .sheet-tab { min-width: 0; padding: 12px 6px; }
+.body-chart-empty { background: rgba(0, 0, 0, 0.2); border: 1px solid var(--card-border); border-radius: 14px; }
+
+/* Estatísticas › Histórico: tendência da melhor série vs treino anterior. */
+.stat-trend { font-family: var(--font-mono); font-size: 11px; font-weight: 600; color: var(--text-faint); }
+.stat-trend.up { color: var(--success); }
+.stat-trend.down { color: var(--text-dim); }
+
+/* Detalhe do dia: apagar um treino marcado sem querer. */
+.day-delete-btn { display: block; width: 100%; margin: 6px 0 18px; padding: 12px; background: transparent; border: 1px dashed rgba(255, 90, 95, 0.45); border-radius: 12px; color: var(--danger); font-family: var(--font-body); font-size: 13px; font-weight: 600; cursor: pointer; }
+.day-delete-btn:active { background: rgba(255, 90, 95, 0.08); }

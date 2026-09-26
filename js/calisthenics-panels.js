@@ -12,8 +12,9 @@ import {
 import * as store from './calisthenics-store.js';
 import { buildEvolutionChart, buildSparkline, metricValue } from './calisthenics-charts.js';
 import { poseSvgs } from './calisthenics-poses.js';
-import { formatDateBR, formatDateShortBR, todayString, dateStrFromDate } from './utils.js';
+import { formatDateBR, formatDateShortBR, todayString, dateStrFromDate, emptyStateHtml } from './utils.js';
 import { musclesHtml } from './body-map.js';
+import { confirmDialog } from './dialog.js';
 
 const MONTHS = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
 const WEEKDAYS = ['D', 'S', 'T', 'Q', 'Q', 'S', 'S'];
@@ -212,7 +213,23 @@ export function openDay(mode, date) {
     ? `<div class="day-muscles">${musclesHtml(primary, secondary, panelMode === 'mobi' ? 'Regiões do dia' : 'Músculos do dia')}</div>`
     : '';
 
-  $('caliDayBody').innerHTML = `${prsHtml}${musclesBlock}<div class="cali-chip-row spaced">${chips.join('')}</div>${body}`;
+  $('caliDayBody').innerHTML = `${prsHtml}${musclesBlock}<div class="cali-chip-row spaced">${chips.join('')}</div>${body}
+    <button type="button" class="day-delete-btn" id="caliDayDelete">Apagar treino deste dia</button>`;
+  const dayMode = panelMode;
+  $('caliDayDelete').addEventListener('click', async () => {
+    const ok = await confirmDialog({
+      title: 'Apagar este treino?',
+      text: `Todas as séries de ${dayMode === 'mobi' ? 'mobilidade' : 'calistenia'} do dia ${formatDateBR(date)} serão apagadas e o dia sai do calendário. Não dá para desfazer.`,
+      confirmLabel: 'Apagar treino',
+      danger: true
+    });
+    if (!ok) return;
+    store.deleteDay(dayMode, date);
+    $('caliDayModal').classList.remove('visible');
+    if ($('caliCalendarModal').classList.contains('visible')) renderCalendar();
+    if (hooks.onDataChanged) hooks.onDataChanged();
+    if (typeof window.showToast === 'function') window.showToast('Treino apagado', `O dia ${formatDateBR(date)} saiu do calendário.`);
+  });
   $('caliDayModal').classList.add('visible');
 }
 
@@ -268,7 +285,7 @@ function trendHtml(step, series) {
 
 function renderHistoryTab(body, withHistory) {
   if (withHistory.length === 0) {
-    body.innerHTML = '<div class="cali-empty">Nenhum histórico registrado ainda. Registre suas séries para acompanhar tudo aqui.</div>';
+    body.innerHTML = emptyStateHtml('list', 'Nenhum histórico ainda', 'Registre suas séries para acompanhar tudo aqui.');
     return;
   }
   const chevron = '<svg class="hist-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>';
@@ -341,7 +358,7 @@ function stepSelectHtml(withHistory) {
 
 function renderEvolutionTab(body, withHistory) {
   if (withHistory.length === 0) {
-    body.innerHTML = '<div class="cali-empty">Nenhum histórico registrado ainda. Registre suas séries para ver sua evolução aqui.</div>';
+    body.innerHTML = emptyStateHtml('chart', 'Sem evolução ainda', 'Registre suas séries para ver sua evolução aqui.');
     return;
   }
   if (!evoStepId || !withHistory.some(s => s.id === evoStepId)) {
@@ -428,7 +445,7 @@ function renderEvolutionContent() {
         <div class="evo-tooltip-placeholder">Toque em um ponto do gráfico para ver os detalhes daquele treino</div>
       </div>`;
   } else {
-    chartHtml = '<div class="evo-chart-card"><div class="evo-chart-empty">Registre mais um treino para começar a ver o gráfico de evolução.</div></div>';
+    chartHtml = `<div class="evo-chart-card">${emptyStateHtml('chart', 'Falta pouco', 'Registre mais um treino para começar a ver o gráfico de evolução.')}</div>`;
   }
 
   const reversed = series.map((session, i) => ({ session, previous: i > 0 ? series[i - 1] : null })).reverse();

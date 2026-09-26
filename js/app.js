@@ -1,8 +1,13 @@
-import { dbFirestore, syncId, setSyncId, syncToCloud, MEDIA_BASE, db, workoutData, SETS_PER_EXERCISE, days } from './data.js';
-import { getDoc, doc } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+import { syncId, setSyncId, fetchCloudBackup, snapshotLocalData, MEDIA_BASE, db, workoutData, days, setsFor, exercisesEverIn, savePlan, addCustomExercise, MUSCLE_CATEGORIES, VOLUME_GROUP } from './data.js';
+import { trySync, syncNow, cancelPendingSync, updateSyncStatus } from './sync.js';
 import { closeRestOverlay, initRestTimer, startRestFor } from './rest-timer.js';
-import { pad2, todayString, yesterdayString, parseNum, safeId, unitLabel, formatLoad, estimatedMax, formatDateBR, formatDateShortBR, dateStrFromDate, getWeekStart, getWeekEnd } from './utils.js';
+import { pad2, todayString, yesterdayString, parseNum, safeId, unitLabel, formatLoad, estimatedMax, formatDateBR, formatDateShortBR, dateStrFromDate, getWeekStart, getWeekEnd, emptyStateHtml } from './utils.js';
 import { musclesHtml, bodyMapHtml, regionLevels } from './body-map.js';
+import { buildSummaryImage } from './share-card.js';
+import { openSetEditor } from './set-editor.js';
+import { confirmDialog, alertDialog, promptDialog } from './dialog.js';
+import { initBackNav } from './back-nav.js';
+import { showSummaryModal, longDateLabel, shareOrDownload } from './summary.js';
 
 // As chaves "Treino A/B" continuam sendo usadas no armazenamento (histórico,
 // séries, sessões); na tela cada treino aparece pelo grupo muscular.
@@ -36,7 +41,6 @@ const statsSheet = document.getElementById('statsSheet');
 const sheetBackdrop = document.getElementById('sheetBackdrop');
 const statsBody = document.getElementById('statsBody');
 const evolutionBody = document.getElementById('evolutionBody');
-const catalogoBody = document.getElementById('catalogoBody');
 const volumeBody = document.getElementById('volumeBody');
 const headerTitle = document.getElementById('headerTitle');
 const headerSubtitle = document.getElementById('headerSubtitle');
@@ -52,108 +56,46 @@ const dayDetailBody = document.getElementById('dayDetailBody');
 function storageKey(day, exercise) { return `treino:${safeId(day)}:${safeId(exercise)}`; }
 function historyKey(exercise) { return `historico:${safeId(exercise)}`; }
 
-// Data "lógica" do treino: se existe uma sessão de `day` iniciada ontem e ainda
-// não finalizada (ex: começou às 22h e virou meia-noite), tudo que for
-// registrado agora continua contando como parte do dia em que a sessão começou.
-// Sem sessão ativa de ontem, cai no comportamento normal (data de hoje).
+// Data "lógica" do treino: se existe uma sessão de `day` iniciada ontem, não
+// finalizada e com série registrada há pouco (ex: começou às 22h e virou
+// meia-noite), o que for registrado agora continua no dia em que ela começou.
+// Sem atividade recente, é um treino novo (data de hoje) — antes, um treino de
+// ontem sem "Finalizar" puxava para ontem as séries do mesmo treino feitas hoje.
+const SESSION_IDLE_MS = 4 * 60 * 60 * 1000;
+// Sem série registrada há esse tempo, o cronômetro para na última série.
+const TIMER_IDLE_MS = 90 * 60 * 1000;
+
+function activityKey(day) { return `sessaoAtividade:${safeId(day)}`; }
+function lastActivityAt(day) { return Number(localStorage.getItem(activityKey(day))) || 0; }
+
 function sessionDateFor(day) {
   const stored = localStorage.getItem(`sessaoAtivaData:${safeId(day)}`);
-  return stored || todayString();
+  const today = todayString();
+  if (!stored || stored === today) return today;
+  const recent = Date.now() - lastActivityAt(day) < SESSION_IDLE_MS;
+  return recent && !isWorkoutFinished(day, stored) ? stored : today;
 }
 
 function ensureFreshSessionAnchor(day) {
   const activeKey = `sessaoAtivaData:${safeId(day)}`;
   const stored = localStorage.getItem(activeKey);
-  if (!stored) return;
-  const isCompleted = getCompletedDays().some(c => c && c.day === day && c.date === stored);
-  const diffDays = Math.floor((new Date(todayString()) - new Date(stored)) / (1000 * 60 * 60 * 24));
-  if (isCompleted || diffDays > 1) {
-    localStorage.removeItem(activeKey);
-  }
+  if (stored && sessionDateFor(day) !== stored) localStorage.removeItem(activeKey);
 }
 
 function setsKey(day, exercise) { return `series:${safeId(day)}:${safeId(exercise)}:${sessionDateFor(day)}`; }
 function sessionStartKey(day) { return `sessaoInicio:${safeId(day)}:${sessionDateFor(day)}`; }
 function sessionEndKey(day) { return `sessaoFim:${safeId(day)}:${sessionDateFor(day)}`; }
 
-// Retorna o início (domingo) da semana calendário que contém `dateStr` (YYYY-MM-DD),
-// deslocado por `offset` semanas (offset negativo = semanas anteriores).
-function trySync() {
-  updateSyncStatus('syncing');
-  try {
-    const result = syncToCloud();
-    if (result && typeof result.then === 'function') {
-      result
-        .then(() => updateSyncStatus('success'))
-        .catch(e => { console.warn("Sincronização em nuvem offline:", e); updateSyncStatus('error'); });
-    }
-  } catch (e) {
-    console.warn("Sincronização em nuvem offline:", e);
-    updateSyncStatus('error');
-  }
+// Treinos finalizados na semana atual (domingo a sábado, igual ao calendário):
+// deixam o botão Superior/Inferior verde. Antes usava um "ciclo" de 7 dias
+// contado a partir do primeiro uso do app.
+function getCompletedDays() {
+  const weekStart = getWeekStart(todayString());
+  return getAllTimeCompletedDays().filter(c => c && c.date >= weekStart);
 }
 
-function updateSyncStatus(state) {
-  const dot = document.getElementById('syncStatusDot');
-  const text = document.getElementById('syncStatusText');
-  if (!dot || !text) return;
-  if (state === 'syncing') {
-    dot.style.background = 'var(--warning)';
-    text.innerText = 'Salvando backup...';
-  } else if (state === 'success') {
-    dot.style.background = 'var(--success)';
-    const ts = Number(localStorage.getItem('lastSyncAt'));
-    text.innerText = ts ? `Backup salvo às ${new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}` : 'Backup salvo';
-  } else if (state === 'error') {
-    dot.style.background = 'var(--danger)';
-    text.innerText = 'Sem conexão — tentaremos de novo automaticamente';
-  } else {
-    const ts = Number(localStorage.getItem('lastSyncAt'));
-    if (ts) {
-      dot.style.background = 'var(--success)';
-      text.innerText = `Último backup: ${new Date(ts).toLocaleDateString('pt-BR')} às ${new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`;
-    } else {
-      dot.style.background = 'var(--text-faint)';
-      text.innerText = 'Nenhum backup feito ainda';
-    }
-  }
-}
-
-function checkAutoReset() {
-  let cs = localStorage.getItem('cycleStart');
-  if (!cs) {
-    cs = todayString();
-    localStorage.setItem('cycleStart', cs);
-    trySync();
-  } else {
-    const start = new Date(cs);
-    const now = new Date(todayString());
-    const diff = Math.floor((now - start) / (1000 * 60 * 60 * 24));
-    if (diff >= 7) {
-      localStorage.setItem('cycleStart', todayString());
-      localStorage.setItem('completedDays', '[]');
-      trySync();
-    }
-  }
-}
-
-function getCompletedDays() { return JSON.parse(localStorage.getItem('completedDays') || '[]'); }
-
-function calculateStreak() {
-  const allCompleted = JSON.parse(localStorage.getItem('allCompletedDates') || '[]');
-  if (allCompleted.length === 0) return 0;
-  const dates = [...new Set(allCompleted)].sort().reverse();
-  const today = new Date(todayString());
-  const diffFromToday = Math.round((today - new Date(dates[0])) / (1000 * 60 * 60 * 24));
-  if (diffFromToday > 1) return 0;
-  let streak = 1;
-  for (let i = 0; i < dates.length - 1; i++) {
-    const current = new Date(dates[i]);
-    const next = new Date(dates[i + 1]);
-    const gap = Math.round((current - next) / (1000 * 60 * 60 * 24));
-    if (gap <= 2) streak++; else break;
-  }
-  return streak;
+function isWorkoutFinished(day, date) {
+  return getAllTimeCompletedDays().some(c => c && c.day === day && c.date === date);
 }
 
 function updateHeaderTitle() {
@@ -162,25 +104,15 @@ function updateHeaderTitle() {
   const weekStart = getWeekStart(todayString());
   let count = 0;
   getLoggedWorkoutsByDate().forEach((_, date) => { if (date >= weekStart) count += 1; });
-  headerSubtitle.innerText = `🔥 ${count} treino${count !== 1 ? 's' : ''} nesta semana`;
+  headerSubtitle.innerText = `${count} treino${count !== 1 ? 's' : ''} nesta semana`;
 }
 
 function saveCompletedDay(day) {
   const logDate = sessionDateFor(day);
-  const completed = getCompletedDays();
-  if (!completed.find(c => c && c.day === day && c.date === logDate)) {
-    completed.push({ day, date: logDate });
-    localStorage.setItem('completedDays', JSON.stringify(completed));
-  }
-  const allDates = JSON.parse(localStorage.getItem('allCompletedDates') || '[]');
-  if (!allDates.includes(logDate)) {
-    allDates.push(logDate);
-    localStorage.setItem('allCompletedDates', JSON.stringify(allDates));
-  }
   const allTime = JSON.parse(localStorage.getItem('completedDaysAllTime') || '[]');
   if (!allTime.find(c => c && c.day === day && c.date === logDate)) {
     allTime.push({ day, date: logDate });
-    localStorage.setItem('completedDaysAllTime', JSON.stringify(allTime.slice(-200)));
+    localStorage.setItem('completedDaysAllTime', JSON.stringify(allTime));
   }
   trySync();
   updateHeaderTitle();
@@ -188,9 +120,9 @@ function saveCompletedDay(day) {
 
 function markSessionStarted(day) {
   const activeKey = `sessaoAtivaData:${safeId(day)}`;
-  if (!localStorage.getItem(activeKey)) {
-    localStorage.setItem(activeKey, todayString());
-  }
+  const date = sessionDateFor(day);
+  if (localStorage.getItem(activeKey) !== date) localStorage.setItem(activeKey, date);
+  localStorage.setItem(activityKey(day), String(Date.now()));
   const key = sessionStartKey(day);
   if (!localStorage.getItem(key)) {
     localStorage.setItem(key, String(Date.now()));
@@ -256,8 +188,14 @@ function updateLiveTimer() {
 
   let endTime = Date.now();
   const endRaw = localStorage.getItem(sessionEndKey(currentDay));
-  const isCompletedToday = getCompletedDays().some(c => c && c.day === currentDay && c.date === sessionDateFor(currentDay));
-  const isLive = !endRaw && !isCompletedToday && Date.now() - Number(startRaw) < SCREEN_AWAKE_MAX_MS;
+  const isCompletedToday = isWorkoutFinished(currentDay, sessionDateFor(currentDay));
+  // Sem série registrada há um tempo (esqueceu de finalizar), o relógio para
+  // na última série em vez de seguir contando por horas.
+  const lastActivity = lastActivityAt(currentDay);
+  const idle = lastActivity
+    ? Date.now() - lastActivity > TIMER_IDLE_MS
+    : Date.now() - Number(startRaw) > SCREEN_AWAKE_MAX_MS;
+  const isLive = !endRaw && !isCompletedToday && !idle;
   setScreenAwake(isLive && isGymModeActive());
 
   if (endRaw) {
@@ -267,6 +205,10 @@ function updateLiveTimer() {
   } else if (isCompletedToday) {
     localStorage.setItem(sessionEndKey(currentDay), String(Date.now()));
     endTime = Date.now();
+    timerEl.style.color = "var(--text-dim)";
+    timerEl.style.borderColor = "var(--card-border)";
+  } else if (idle) {
+    endTime = Math.max(lastActivity, Number(startRaw));
     timerEl.style.color = "var(--text-dim)";
     timerEl.style.borderColor = "var(--card-border)";
   } else {
@@ -290,17 +232,31 @@ setInterval(updateLiveTimer, 1000);
 function updateFinishButtonState() {
   const btn = document.getElementById('finishDayBtn');
   if (!btn) return;
-  const completed = getCompletedDays();
-  const isDone = completed.find(c => c && c.day === currentDay && c.date === sessionDateFor(currentDay));
-  if (isDone) {
+  if (isWorkoutFinished(currentDay, sessionDateFor(currentDay))) {
     btn.innerText = "Treino Finalizado ✓";
     btn.disabled = true;
     btn.classList.add('finished');
   } else {
     btn.innerText = "Finalizar Treino Atual";
-    btn.disabled = false;
+    // Igual à calistenia: só dá para finalizar depois da primeira série.
+    btn.disabled = sessionProgress(currentDay).done === 0;
     btn.classList.remove('finished');
   }
+}
+
+// Séries feitas / previstas do treino na sessão atual. Exercício pulado hoje
+// só conta as séries que chegaram a ser feitas.
+function sessionProgress(day) {
+  const skipped = getSkipped(day);
+  let done = 0;
+  let total = 0;
+  workoutData[day].exercises.forEach(ex => {
+    const n = setsFor(day, ex);
+    const exDone = getSetsCompleted(day, ex).filter(i => i < n).length;
+    total += skipped.includes(ex) ? exDone : n;
+    done += exDone;
+  });
+  return { done, total };
 }
 
 function buildWorkoutSummary(day) {
@@ -312,7 +268,7 @@ function buildWorkoutSummary(day) {
     const setsCompleted = getSetsCompleted(day, ex);
     totalSets += setsCompleted.length;
     const history = loadHistory(ex);
-    const todaySets = history.filter(h => h.date === logDate);
+    const todaySets = history.filter(h => h.date === logDate && entryInDay(h, day));
     if (todaySets.length === 0) return;
     const todayUnit = todaySets[todaySets.length - 1].unit || 'kg';
     const historyBeforeToday = history.filter(h => h.date !== logDate && (h.unit || 'kg') === todayUnit);
@@ -333,26 +289,46 @@ function buildWorkoutSummary(day) {
 
 function showWorkoutSummary(day) {
   const summary = buildWorkoutSummary(day);
-  const modal = document.getElementById('summaryModal');
-  const body = document.getElementById('summaryBody');
-  if (!modal || !body) return;
-  let prsHtml = '';
-  if (summary.prsToday.length > 0) {
-    prsHtml = `
-      <div class="summary-prs">
-        <div class="summary-prs-label">🏆 Recordes de hoje</div>
-        ${summary.prsToday.map(pr => `<div class="summary-pr-row"><span>${pr.exercise}</span><span class="summary-pr-value">${formatLoad(pr.weight, pr.unit)} × ${pr.reps}</span></div>`).join('')}
-      </div>`;
-  }
-  body.innerHTML = `
-    <div class="summary-stats-row">
-      <div class="summary-stat"><div class="summary-stat-value">${summary.totalSets}</div><div class="summary-stat-label">Séries</div></div>
-      <div class="summary-stat"><div class="summary-stat-value">${summary.duration || '—'}</div><div class="summary-stat-label">Duração</div></div>
-      <div class="summary-stat"><div class="summary-stat-value">${summary.prsToday.length}</div><div class="summary-stat-label">PRs</div></div>
-    </div>
-    ${prsHtml}
-  `;
-  modal.classList.add('visible');
+  showSummaryModal({
+    stats: [
+      { value: summary.totalSets, label: 'Séries' },
+      { value: summary.duration || '—', label: 'Duração' },
+      { value: summary.prsToday.length, label: 'PRs' }
+    ],
+    prs: summary.prsToday.map(pr => ({ name: pr.exercise, value: `${formatLoad(pr.weight, pr.unit)} × ${pr.reps}` })),
+    onShare: () => shareSummaryImage(day)
+  });
+}
+
+async function shareSummaryImage(day) {
+  const logDate = sessionDateFor(day);
+  const logged = getExercisesLoggedForDay(day, logDate);
+  const summary = buildWorkoutSummary(day);
+  const volume = getDayVolumeKg(logged);
+  const exercises = logged.map(item => {
+    const progress = getDayProgress(item.exercise, logDate);
+    const best = progress ? progress.best : item.sets[0];
+    return {
+      name: item.exercise,
+      best: `${formatLoad(best.weight, best.unit || 'kg')} × ${best.reps}`,
+      pr: !!(progress && progress.isPR)
+    };
+  });
+  const levelByName = {};
+  logged.forEach(item => (db[item.exercise] ? db[item.exercise].sec : []).forEach(m => { levelByName[m] = 'secondary'; }));
+  logged.forEach(item => { if (db[item.exercise]) levelByName[db[item.exercise].prim] = 'primary'; });
+  const blob = await buildSummaryImage({
+    title: dayLabel(day),
+    dateLabel: longDateLabel(logDate),
+    stats: [
+      { value: summary.duration || '—', label: 'Duração' },
+      { value: String(summary.totalSets), label: 'Séries' },
+      { value: volume > 0 ? `${Math.round(volume).toLocaleString('pt-BR')} kg` : '—', label: 'Volume' }
+    ],
+    exercises,
+    levels: regionLevels(levelByName)
+  });
+  await shareOrDownload(blob, `treino-${logDate}.png`, `Treino ${dayLabel(day)}`);
 }
 
 function loadProgress(day, exercise) {
@@ -364,14 +340,14 @@ function saveProgressData(day, exercise, weight, reps, notes, setIndex, unit) {
   localStorage.setItem(storageKey(day, exercise), JSON.stringify({ weight, reps, notes, unit }));
   const history = loadHistory(exercise);
   const logDate = sessionDateFor(day);
-  const entry = { date: logDate, weight: parseNum(weight), reps: parseNum(reps), setIndex, notes: notes || '', unit: unit || 'kg' };
+  const entry = { date: logDate, day, weight: parseNum(weight), reps: parseNum(reps), setIndex, notes: notes || '', unit: unit || 'kg' };
   const existingIdx = history.findIndex(h => h.date === logDate && h.setIndex === setIndex);
   if (existingIdx >= 0) {
     history[existingIdx] = entry;
   } else {
     history.push(entry);
   }
-  localStorage.setItem(historyKey(exercise), JSON.stringify(history.slice(-300)));
+  localStorage.setItem(historyKey(exercise), JSON.stringify(history));
   trySync();
 }
 
@@ -381,6 +357,15 @@ function loadHistory(exercise) {
   return history.map(h => ({ unit: 'kg', ...h }));
 }
 function getSetsCompleted(day, exercise) { return JSON.parse(localStorage.getItem(setsKey(day, exercise)) || '[]'); }
+// Primeira série ainda não feita (se você desmarcou a 2ª com a 3ª feita, é a 2ª),
+// ou -1 quando todas estão concluídas.
+function nextFreeSetIndex(day, exercise) {
+  const done = getSetsCompleted(day, exercise);
+  for (let i = 0; i < setsFor(day, exercise); i++) if (!done.includes(i)) return i;
+  return -1;
+}
+// Registro do histórico pertence a esse treino? Registros antigos não guardavam o treino.
+function entryInDay(h, day) { return !h.day || h.day === day; }
 function bestSetOf(sets) {
   return sets.reduce((best, h) => estimatedMax(h.weight, h.reps) > estimatedMax(best.weight, best.reps) ? h : best);
 }
@@ -454,7 +439,8 @@ function getPersonalRecord(exercise, unit) {
   return history.reduce((best, h) => estimatedMax(h.weight, h.reps) > estimatedMax(best.weight, best.reps) ? h : best);
 }
 
-function maybeShowSetFeedback(exercise, historyBefore, weight, reps, setIndexBeingCompleted, unit) {
+// Só avisa recorde (fato), sem mensagens de "coaching".
+function maybeShowSetFeedback(exercise, historyBefore, weight, reps, unit) {
   if (!weight || !reps) return;
   const sameUnitHistory = historyBefore.filter(h => (h.unit || 'kg') === unit);
   const prevBest = sameUnitHistory.length > 0
@@ -463,10 +449,6 @@ function maybeShowSetFeedback(exercise, historyBefore, weight, reps, setIndexBei
   const isNewPR = prevBest && estimatedMax(weight, reps) > estimatedMax(prevBest.weight, prevBest.reps);
   if (isNewPR) {
     showToast('🏆 Novo recorde pessoal!', `${formatLoad(weight, unit)} × ${reps} supera seu melhor anterior (${formatLoad(prevBest.weight, unit)} × ${prevBest.reps}).`);
-    return;
-  }
-  if (setIndexBeingCompleted === SETS_PER_EXERCISE - 1 && prevBest && reps >= prevBest.reps && weight >= prevBest.weight) {
-    showToast('💪 Boa consistência', 'Você manteve ou superou seu último desempenho nesse exercício.');
   }
 }
 
@@ -488,25 +470,10 @@ function toggleSet(day, exercise, index) {
 }
 
 function updateSessionBar(day) {
-  const exercises = workoutData[day].exercises;
-  let done = 0;
-  const total = exercises.length * SETS_PER_EXERCISE;
-  exercises.forEach(ex => { done += getSetsCompleted(day, ex).length; });
+  const { done, total } = sessionProgress(day);
   sessionCountEl.innerHTML = `${done}<span class="session-total">/${total}</span>`;
   sessionFillEl.style.width = `${total > 0 ? (done / total) * 100 : 0}%`;
   updateHeaderTitle();
-}
-
-function updateStreakBadge() {
-  const streakEl = document.getElementById('streakBadge');
-  if (!streakEl) return;
-  const streak = calculateStreak();
-  if (streak >= 2) {
-    streakEl.style.display = 'inline-flex';
-    streakEl.innerHTML = `🔥 ${streak} dias seguidos`;
-  } else {
-    streakEl.style.display = 'none';
-  }
 }
 
 function loadBodyMetrics() {
@@ -531,13 +498,7 @@ function saveBodyMetrics(dataObj) {
 function buildMetricChartSVG(metrics, field) {
     const valid = metrics.filter(m => m[field]);
     if (valid.length < 2) {
-        return `
-        <div class="empty-chart">
-            <svg viewBox="0 0 100 40" preserveAspectRatio="none">
-                <polyline points="0,30 20,25 40,35 60,15 80,20 100,5" fill="none" stroke="var(--accent)" stroke-width="1" stroke-dasharray="2,2"/>
-            </svg>
-            <span>Registre mais dados para ver a evolução</span>
-        </div>`;
+        return `<div class="body-chart-empty">${emptyStateHtml('chart', 'Poucos registros', 'Salve essa medida em dois dias diferentes para ver o gráfico.')}</div>`;
     }
 
     const W = 320, H = 140, PAD_TOP = 25, PAD_BOTTOM = 20, PAD_LEFT = 30, PAD_RIGHT = 15;
@@ -621,25 +582,34 @@ function buildMetricChartSVG(metrics, field) {
 function renderBodyModal() {
     const content = document.getElementById('bodyModalContent');
     const metrics = loadBodyMetrics();
-    const latest = metrics.length > 0 ? metrics[metrics.length - 1] : {};
-    const first = metrics.length > 0 ? metrics[0] : {};
+    // Cada medida tem sua própria história (braço pode ter sido medido há um
+    // mês e o peso ontem), então primeiro/último valor são por campo.
+    const withField = field => metrics.filter(m => m[field]);
+    const latest = {};
+    const first = {};
+    Object.keys(bodyMetricsMap).forEach(field => {
+        const list = withField(field);
+        latest[field] = list.length ? list[list.length - 1][field] : null;
+        first[field] = list.length ? list[0][field] : null;
+    });
 
-    function getDeltaHtml(field, invertColors = false) {
-        if (!latest[field] || !first[field] || metrics.length < 2) return '<div class="body-delta flat">--</div>';
-        const diff = (latest[field] - first[field]).toFixed(1);
-        if (diff == 0) return `<div class="body-delta flat">Sem alteração</div>`;
-        const isPos = diff > 0;
-        let colorClass = isPos ? 'pos' : 'neg';
-        if (invertColors) colorClass = isPos ? 'neg' : 'pos';
-        return `<div class="body-delta ${colorClass}">${isPos ? '+' : ''}${diff} desde o início</div>`;
+    // Diferença desde a primeira medida, com sinal e sem cor de "bom/ruim":
+    // subir ou descer depende do seu objetivo.
+    function deltaText(field, unit) {
+        if (withField(field).length < 2) return null;
+        const diff = Math.round((latest[field] - first[field]) * 10) / 10;
+        if (diff === 0) return 'Igual ao início';
+        return `${diff > 0 ? '+' : '−'}${Math.abs(diff)}${unit} desde o início`;
+    }
+
+    function getDeltaHtml(field) {
+        const text = deltaText(field, 'cm');
+        return `<div class="body-delta flat">${text || '--'}</div>`;
     }
 
     function getWeightDeltaHtml() {
-        if (!latest.weight || !first.weight || metrics.length < 2) return '';
-        const diff = (latest.weight - first.weight).toFixed(1);
-        if (diff == 0) return `<div class="body-delta flat">= Início</div>`;
-        const isPos = diff > 0;
-        return `<div class="body-delta ${isPos ? 'pos' : 'neg'}">${isPos ? '+' : ''}${Math.abs(diff)}kg desde o início</div>`;
+        const text = deltaText('weight', 'kg');
+        return text ? `<div class="body-delta flat">${text}</div>` : '';
     }
 
     function getMiniSpark(field) {
@@ -703,7 +673,7 @@ function renderBodyModal() {
                         <input type="number" inputmode="decimal" id="bm-waist" value="${latest.waist || ''}" placeholder="--">
                         <span class="body-input-unit">cm</span>
                     </div>
-                    ${getDeltaHtml('waist', true)}
+                    ${getDeltaHtml('waist')}
                     ${getMiniSpark('waist')}
                 </div>
                 <div class="body-input-group">
@@ -739,17 +709,37 @@ function renderBodyModal() {
         });
     });
 
+    // Salva o peso sempre que preenchido (pesar de novo e dar igual também é um
+    // registro), mas as circunferências só quando mudaram — antes cada "Salvar"
+    // copiava todas as medidas para a data nova, como se tivessem sido medidas.
     document.getElementById('saveBodyBtn').addEventListener('click', () => {
-        const data = {
-            weight: parseNum(document.getElementById('bm-weight').value) || null,
-            arm: parseNum(document.getElementById('bm-arm').value) || null,
-            chest: parseNum(document.getElementById('bm-chest').value) || null,
-            waist: parseNum(document.getElementById('bm-waist').value) || null,
-            thigh: parseNum(document.getElementById('bm-thigh').value) || null,
-            calf: parseNum(document.getElementById('bm-calf').value) || null
-        };
+        const data = {};
+        const weight = parseNum(document.getElementById('bm-weight').value);
+        if (weight) data.weight = weight;
+        ['arm', 'chest', 'waist', 'thigh', 'calf'].forEach(field => {
+            const value = parseNum(document.getElementById(`bm-${field}`).value);
+            if (value && value !== latest[field]) data[field] = value;
+        });
+        if (Object.keys(data).length === 0) {
+            showToast('Nada para salvar', 'Preencha o peso ou mude alguma medida.');
+            return;
+        }
         saveBodyMetrics(data);
     });
+}
+
+function bindTopMenu() {
+    const btn = document.getElementById('topMenuBtn');
+    const menu = document.getElementById('topMenu');
+    const setOpen = (open) => {
+        menu.classList.toggle('open', open);
+        btn.setAttribute('aria-expanded', String(open));
+    };
+    btn.addEventListener('click', (e) => { e.stopPropagation(); setOpen(!menu.classList.contains('open')); });
+    // Escolher uma opção ou tocar fora fecha o menu.
+    menu.addEventListener('click', () => setOpen(false));
+    document.addEventListener('click', (e) => { if (!e.target.closest('.top-menu-wrap')) setOpen(false); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') setOpen(false); });
 }
 
 function bindTopBarModals() {
@@ -775,13 +765,168 @@ function bindTopBarModals() {
     });
 }
 
+// ---------- Editor do treino (Configurações > Editar Exercícios) ----------
+// Mexe só em `workoutData` + `gym:plan`; histórico e séries continuam nas mesmas
+// chaves (pelo nome do exercício), então nada registrado se perde.
+const MAX_SETS = 10;
+let planEditDay = null;
+
+function isInAnyPlan(exercise) {
+  return days.some(d => workoutData[d].exercises.includes(exercise));
+}
+
+function applyPlanChange() {
+  savePlan();
+  trySync();
+  renderExercises(currentDay);
+  updateSessionBar(currentDay);
+  renderDaySelectors();
+  renderPlanEditor();
+}
+
+function removeFromPlan(day, exercise) {
+  const plan = workoutData[day];
+  plan.exercises = plan.exercises.filter(ex => ex !== exercise);
+  if (!plan.retired.includes(exercise)) plan.retired.push(exercise);
+}
+
+function addToPlan(day, exercise) {
+  const plan = workoutData[day];
+  plan.exercises.push(exercise);
+  plan.retired = plan.retired.filter(ex => ex !== exercise);
+}
+
+const planIcon = {
+  up: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 15l-6-6-6 6"/></svg>',
+  down: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>',
+  remove: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg>'
+};
+
+function renderPlanEditor() {
+  const content = document.getElementById('planModalContent');
+  const day = planEditDay;
+  const plan = workoutData[day];
+  const tabs = orderedDays.map(d => `<button type="button" class="tab-btn ${d === day ? 'active' : ''}" data-plan-day="${d}">${dayLabel(d)}</button>`).join('');
+  const rows = plan.exercises.map((ex, i) => {
+    const n = setsFor(day, ex);
+    return `
+      <div class="plan-row" data-idx="${i}">
+        <div class="plan-move">
+          <button type="button" class="plan-icon" data-act="up" aria-label="Subir" ${i === 0 ? 'disabled' : ''}>${planIcon.up}</button>
+          <button type="button" class="plan-icon" data-act="down" aria-label="Descer" ${i === plan.exercises.length - 1 ? 'disabled' : ''}>${planIcon.down}</button>
+        </div>
+        <span class="plan-name">${ex}</span>
+        <div class="plan-sets">
+          <button type="button" class="plan-icon" data-act="less" aria-label="Menos uma série" ${n <= 1 ? 'disabled' : ''}>−</button>
+          <span class="plan-sets-num">${n}<small>${n === 1 ? 'série' : 'séries'}</small></span>
+          <button type="button" class="plan-icon" data-act="more" aria-label="Mais uma série" ${n >= MAX_SETS ? 'disabled' : ''}>+</button>
+        </div>
+        <button type="button" class="plan-icon plan-remove" data-act="remove" aria-label="Tirar do treino">${planIcon.remove}</button>
+      </div>`;
+  }).join('');
+
+  const available = {};
+  Object.keys(db).filter(ex => !isInAnyPlan(ex)).forEach(ex => {
+    (available[db[ex].cat] = available[db[ex].cat] || []).push(ex);
+  });
+  const availableHtml = Object.keys(available).length === 0
+    ? '<option value="">Todos os exercícios já estão em algum treino</option>'
+    : Object.entries(available).map(([cat, list]) => `<optgroup label="${cat}">${list.map(ex => `<option value="${ex}">${ex}</option>`).join('')}</optgroup>`).join('');
+  const muscleOptions = Object.keys(MUSCLE_CATEGORIES).map(m => `<option value="${m}">${m}</option>`).join('');
+
+  content.innerHTML = `
+    <nav class="selectors" style="padding-top:0;">${tabs}</nav>
+    <div class="plan-list">${rows || '<p class="plan-empty">Nenhum exercício nesse treino.</p>'}</div>
+    <div class="backup-section">
+      <h3>Adicionar exercício</h3>
+      <select id="planAddSelect" class="plan-input">${availableHtml}</select>
+      <button type="button" id="planAddBtn" class="save-btn plan-btn" ${Object.keys(available).length === 0 ? 'disabled' : ''}>Adicionar ao ${dayLabel(day)}</button>
+      <h3>Criar exercício novo</h3>
+      <input type="text" id="planNewName" class="plan-input" maxlength="60" placeholder="Nome do exercício">
+      <select id="planNewMuscle" class="plan-input">${muscleOptions}</select>
+      <button type="button" id="planNewBtn" class="save-btn plan-btn">Criar e adicionar ao ${dayLabel(day)}</button>
+    </div>`;
+}
+
+function createCustomExercise(rawName, prim) {
+  const name = rawName.trim().replace(/\s+/g, ' ');
+  const invalid = text => { alertDialog({ title: 'Não deu para criar', text }); return null; };
+  if (name.length < 2) return invalid('Digite o nome do exercício.');
+  if (/["<>\\&]/.test(name)) return invalid('O nome não pode ter os caracteres " < > \\ &');
+  const existing = Object.keys(db).find(ex => ex.toLowerCase() === name.toLowerCase() || safeId(ex).toLowerCase() === safeId(name).toLowerCase());
+  if (existing) {
+    if (isInAnyPlan(existing)) return invalid(`"${existing}" já está em um treino.`);
+    return existing;
+  }
+  if (!safeId(name)) return invalid('Use pelo menos uma letra ou número sem acento no nome.');
+  addCustomExercise(name, prim);
+  return name;
+}
+
+function bindPlanEditor() {
+  const modal = document.getElementById('planModal');
+  const content = document.getElementById('planModalContent');
+  document.getElementById('editPlanBtn').addEventListener('click', () => {
+    planEditDay = currentDay;
+    renderPlanEditor();
+    modal.classList.add('visible');
+  });
+  document.getElementById('closePlan').addEventListener('click', () => modal.classList.remove('visible'));
+
+  content.addEventListener('click', (e) => {
+    const tab = e.target.closest('[data-plan-day]');
+    if (tab) { planEditDay = tab.dataset.planDay; renderPlanEditor(); return; }
+
+    if (e.target.closest('#planAddBtn')) {
+      const ex = document.getElementById('planAddSelect').value;
+      if (!ex || !db[ex]) return;
+      addToPlan(planEditDay, ex);
+      applyPlanChange();
+      return;
+    }
+    if (e.target.closest('#planNewBtn')) {
+      const name = createCustomExercise(document.getElementById('planNewName').value, document.getElementById('planNewMuscle').value);
+      if (!name) return;
+      addToPlan(planEditDay, name);
+      applyPlanChange();
+      return;
+    }
+
+    const btn = e.target.closest('[data-act]');
+    if (!btn || btn.disabled) return;
+    const plan = workoutData[planEditDay];
+    const idx = Number(btn.closest('.plan-row').dataset.idx);
+    const ex = plan.exercises[idx];
+    const act = btn.dataset.act;
+    if (act === 'up' || act === 'down') {
+      const to = act === 'up' ? idx - 1 : idx + 1;
+      [plan.exercises[idx], plan.exercises[to]] = [plan.exercises[to], plan.exercises[idx]];
+    } else if (act === 'less' || act === 'more') {
+      const n = setsFor(planEditDay, ex) + (act === 'more' ? 1 : -1);
+      plan.sets[ex] = Math.max(1, Math.min(MAX_SETS, n));
+    } else if (act === 'remove') {
+      const day = planEditDay;
+      confirmDialog({
+        title: `Tirar do ${dayLabel(day)}?`,
+        text: `${ex} sai do treino. O histórico dele continua salvo e você pode adicioná-lo de volta quando quiser.`,
+        confirmLabel: 'Tirar do treino',
+        danger: true
+      }).then(ok => {
+        if (!ok) return;
+        removeFromPlan(day, ex);
+        applyPlanChange();
+      });
+      return;
+    }
+    applyPlanChange();
+  });
+}
+
 function init() {
-  checkAutoReset();
   updateHeaderTitle();
   renderDaySelectors();
   renderExercises(currentDay);
   updateSessionBar(currentDay);
-  updateStreakBadge();
   updateLiveTimer();
   initRestTimer();
   bindStatsSheet();
@@ -790,9 +935,12 @@ function init() {
   bindSummaryModal();
   bindFinishDay();
   bindTopBarModals();
+  bindTopMenu();
   bindCalendarModal();
   bindDayDetailModal();
   bindDateFixTool();
+  bindPlanEditor();
+  initBackNav();
 }
 
 window.toggleAccordion = function (id, day) {
@@ -831,9 +979,13 @@ function renderDaySelectors() {
     const isCompleted = completedDays.includes(day);
     btn.className = `tab-btn ${day === currentDay ? 'active' : ''} ${isCompleted ? 'completed' : ''}`;
     btn.innerText = dayLabel(day);
-    btn.onclick = () => {
+    btn.onclick = async () => {
       if (day === currentDay) return;
-      if (hasUnsavedInput() && !confirm("Você tem carga/reps digitados que ainda não foram registrados nessa série. Trocar mesmo assim e perder esses valores?")) {
+      if (hasUnsavedInput() && !(await confirmDialog({
+        title: `Trocar para ${dayLabel(day)}?`,
+        text: 'A carga/reps que você digitou ainda não foi registrada e vai se perder.',
+        confirmLabel: 'Trocar mesmo assim'
+      }))) {
         return;
       }
       currentDay = day;
@@ -852,18 +1004,26 @@ function renderDaySelectors() {
 }
 
 function bindFinishDay() {
-  document.getElementById('finishDayBtn').addEventListener('click', () => {
-    const completed = getCompletedDays();
-    const isDone = completed.find(c => c && c.day === currentDay && c.date === sessionDateFor(currentDay));
-    if (isDone) return;
-    
-    // Trava de segurança para congelar o timer
-    localStorage.setItem(sessionEndKey(currentDay), String(Date.now()));
+  document.getElementById('finishDayBtn').addEventListener('click', async () => {
+    if (isWorkoutFinished(currentDay, sessionDateFor(currentDay))) return;
+    const { done, total } = sessionProgress(currentDay);
+    if (done === 0) return;
+    // Toque sem querer no fim da lista: confirma quando ainda faltam séries.
+    if (done < total && !(await confirmDialog({
+      title: 'Finalizar treino?',
+      text: `Ainda ${total - done === 1 ? 'falta 1 série' : `faltam ${total - done} séries`} de ${dayLabel(currentDay)}.`,
+      confirmLabel: 'Finalizar mesmo assim'
+    }))) return;
+
+    // Congela o cronômetro. Se a última série foi há muito tempo (esqueceu de
+    // finalizar), a duração termina nela, não agora.
+    const lastActivity = lastActivityAt(currentDay);
+    const endAt = lastActivity && Date.now() - lastActivity > TIMER_IDLE_MS ? lastActivity : Date.now();
+    localStorage.setItem(sessionEndKey(currentDay), String(endAt));
     
     try {
         saveCompletedDay(currentDay);
         renderDaySelectors();
-        updateStreakBadge();
         updateFinishButtonState();
         updateLiveTimer(); // Força a atualização do relógio na tela
         showWorkoutSummary(currentDay);
@@ -876,65 +1036,116 @@ function bindFinishDay() {
   });
 }
 
+// Séries de hoje registradas no histórico, por índice (para mostrar "45×10"
+// dentro da bolinha e abrir o editor com os valores certos).
+function todaySetEntries(day, exercise) {
+  const date = sessionDateFor(day);
+  const map = new Map();
+  loadHistory(exercise).forEach(h => { if (h.date === date && entryInDay(h, day)) map.set(h.setIndex, h); });
+  return map;
+}
+
+// Com muitas séries a bolinha fica estreita demais para "45×10": mostra só o ✓.
+const DOT_VALUES_MAX_SETS = 5;
+
+function setDotContent(entry, totalSets) {
+  if (!entry || totalSets > DOT_VALUES_MAX_SETS) return '✓';
+  const load = entry.unit === 'placas' ? `${entry.weight}pl` : `${entry.weight}`;
+  // Fonte menor com 4 ou 5 bolinhas, para "42.5×10" caber numa linha só.
+  return `<span class="set-dot-value ${totalSets > 3 ? 'small' : ''}">${load}×${entry.reps}</span>`;
+}
+
+// "Pular hoje": exercício fica fora da conta de séries do dia (máquina ocupada,
+// dor, falta de tempo). Vale só para a data da sessão atual.
+function skippedKey(day) { return `pulados:${safeId(day)}:${sessionDateFor(day)}`; }
+function getSkipped(day) { return JSON.parse(localStorage.getItem(skippedKey(day)) || '[]'); }
+function isSkipped(day, exercise) { return getSkipped(day).includes(exercise); }
+
+function setSkipped(day, exercise, skipped) {
+  const list = getSkipped(day).filter(ex => ex !== exercise);
+  if (skipped) list.push(exercise);
+  if (list.length) localStorage.setItem(skippedKey(day), JSON.stringify(list));
+  else localStorage.removeItem(skippedKey(day));
+  trySync();
+  updateExerciseCard(day, exercise);
+  updateSessionBar(day);
+}
+
 function buildExerciseCardHTML(day, exercise) {
   const savedData = loadProgress(day, exercise);
   const currentUnit = savedData.unit || getLastUsedUnit(exercise);
   const setsCompleted = getSetsCompleted(day, exercise);
-  const isDone = setsCompleted.length >= SETS_PER_EXERCISE;
+  const totalSets = setsFor(day, exercise);
+  const doneCount = setsCompleted.filter(i => i < totalSets).length;
+  const isDone = doneCount >= totalSets;
+  const skipped = !isDone && isSkipped(day, exercise);
   const id = safeId(exercise) + safeId(day);
+  const exArg = exercise.replace(/'/g, "\\'");
   const pr = getPersonalRecord(exercise, currentUnit);
+  const entries = todaySetEntries(day, exercise);
   let dotsHtml = '';
-  for (let i = 0; i < SETS_PER_EXERCISE; i++) {
+  for (let i = 0; i < totalSets; i++) {
     const filled = setsCompleted.includes(i);
-    dotsHtml += `<div class="set-dot ${filled ? 'filled' : ''}" data-set-index="${i}">${filled ? '✓' : i + 1}</div>`;
+    dotsHtml += filled
+      ? `<button type="button" class="set-dot filled" data-set-index="${i}" aria-label="Editar série ${i + 1}">${setDotContent(entries.get(i), totalSets)}</button>`
+      : `<div class="set-dot" data-set-index="${i}">${i + 1}</div>`;
   }
   const notesDisplay = savedData.notes ? 'none' : 'flex';
   const notesVisibleClass = savedData.notes ? 'visible' : '';
+  const notesValue = String(savedData.notes || '').replace(/"/g, '&quot;');
   const isExpanded = expandedExerciseId === id;
-  const prBadgeHtml = pr ? `<span class="pr-badge" role="button" tabindex="0" onclick="event.stopPropagation(); openEvolutionFor('${exercise.replace(/'/g, "\\'")}')">PR: ${formatLoad(pr.weight, pr.unit || 'kg')}×${pr.reps}</span>` : '';
+  const prBadgeHtml = pr ? `<span class="pr-badge" role="button" tabindex="0" onclick="event.stopPropagation(); openEvolutionFor('${exArg}')">PR: ${formatLoad(pr.weight, pr.unit || 'kg')}×${pr.reps}</span>` : '';
+  const progText = skipped ? 'Pulado hoje' : `${doneCount}/${totalSets} séries concluídas`;
   const unitToggleHtml = `
             <div class="unit-toggle" id="unitToggle-${id}" role="group" aria-label="Unidade de carga">
               <button type="button" class="unit-toggle-btn ${currentUnit === 'kg' ? 'active' : ''}" data-unit="kg">Kg</button>
               <button type="button" class="unit-toggle-btn ${currentUnit === 'placas' ? 'active' : ''}" data-unit="placas">Placas</button>
             </div>`;
 
+  const bodyHtml = skipped
+    ? `<button type="button" class="save-btn secondary-btn" id="unskip-${id}">Voltar para o treino</button>`
+    : `
+            <div class="set-tracker" id="tracker-${id}">${dotsHtml}</div>
+            ${unitToggleHtml}
+            <div class="input-row">
+              <div class="input-group"><label id="weightLabel-${id}">Carga (${unitLabel(currentUnit)})</label><input type="number" inputmode="decimal" enterkeyhint="next" id="weight-${id}" value="${savedData.weight}" placeholder="40"></div>
+              <div class="input-group"><label>Reps</label><input type="number" inputmode="numeric" enterkeyhint="done" id="reps-${id}" value="${savedData.reps}" placeholder="10"></div>
+            </div>
+            <div class="card-actions">
+              <button class="save-btn" id="save-${id}" ${isDone ? 'disabled' : ''}>${isDone ? 'Séries concluídas' : 'Registrar série'}</button>
+              <button class="rest-btn-trigger" id="rest-${id}" aria-label="Iniciar descanso"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg></button>
+            </div>
+            <div class="card-links">
+              <button class="add-notes-btn" style="display: ${notesDisplay};" id="toggle-notes-${id}">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M12 5v14M5 12h14"/></svg>
+                Ajustes de máquina
+              </button>
+              ${isDone ? '' : `<button type="button" class="skip-btn" id="skip-${id}">Pular hoje</button>`}
+            </div>
+            <div class="notes-row ${notesVisibleClass}" id="notes-container-${id}">
+              <input type="text" id="notes-${id}" class="notes-input" placeholder="Ex: banco 4, presilha 2..." value="${notesValue}">
+            </div>`;
+
   return `
-    <div class="exercise-card ${isDone ? 'done' : ''} ${isExpanded ? 'expanded' : ''}" data-card-id="${id}" data-day="${day}" data-exercise="${exercise}">
+    <div class="exercise-card ${isDone ? 'done' : ''} ${skipped ? 'skipped' : ''} ${isExpanded ? 'expanded' : ''}" data-card-id="${id}" data-day="${day}" data-exercise="${exercise}">
       <div class="exercise-header" role="button" tabindex="0" aria-expanded="${isExpanded}" onclick="toggleAccordion('${id}', '${day}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleAccordion('${id}', '${day}');}">
         <div class="exercise-info">
           <div class="exercise-title-row">
             <span class="exercise-title">${exercise}</span>
             <div class="exercise-title-actions">
-              <button class="info-icon" aria-label="Ver evolução" onclick="event.stopPropagation(); openEvolutionFor('${exercise.replace(/'/g, "\\'")}')">
+              <button class="info-icon" aria-label="Ver evolução" onclick="event.stopPropagation(); openEvolutionFor('${exArg}')">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline><polyline points="17 6 23 6 23 12"></polyline></svg>
               </button>
-              <button class="info-icon" aria-label="Ver guia do exercício" onclick="event.stopPropagation(); showExerciseGuide('${exercise.replace(/'/g, "\\'")}')">?</button>
+              <button class="info-icon" aria-label="Ver guia do exercício" onclick="event.stopPropagation(); showExerciseGuide('${exArg}')">?</button>
             </div>
           </div>
-          <span class="exercise-prog"><span>${setsCompleted.length}/${SETS_PER_EXERCISE} séries concluídas</span>${prBadgeHtml}</span>
+          <span class="exercise-prog"><span>${progText}</span>${skipped ? `<button type="button" class="unskip-chip" id="unskipChip-${id}">Voltar para o treino</button>` : prBadgeHtml}</span>
         </div>
         <svg class="exercise-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
       </div>
       <div class="exercise-wrapper">
         <div class="exercise-body">
-          <div class="exercise-inner">
-            <div class="set-tracker" id="tracker-${id}">${dotsHtml}</div>
-            ${unitToggleHtml}
-            <div class="input-row">
-              <div class="input-group"><label id="weightLabel-${id}">Carga (${unitLabel(currentUnit)})</label><input type="number" inputmode="decimal" id="weight-${id}" value="${savedData.weight}" placeholder="40"></div>
-              <div class="input-group"><label>Reps</label><input type="number" inputmode="numeric" id="reps-${id}" value="${savedData.reps}" placeholder="10"></div>
-            </div>
-            <div class="card-actions">
-              <button class="save-btn" id="save-${id}">Registrar série</button>
-              <button class="rest-btn-trigger" id="rest-${id}" aria-label="Iniciar descanso"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg></button>
-            </div>
-            <button class="add-notes-btn" style="display: ${notesDisplay};" id="toggle-notes-${id}">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M12 5v14M5 12h14"/></svg>
-              Adicionar ajustes de máquina
-            </button>
-            <div class="notes-row ${notesVisibleClass}" id="notes-container-${id}">
-              <input type="text" id="notes-${id}" class="notes-input" placeholder="Ex: banco 4, presilha 2..." value="${savedData.notes || ''}">
-            </div>
+          <div class="exercise-inner">${bodyHtml}
           </div>
         </div>
       </div>
@@ -953,10 +1164,68 @@ function setCardUnit(id, unit) {
   if (label) label.innerText = `Carga (${unitLabel(unit)})`;
 }
 
+// Corrige carga/reps de uma série já feita hoje. Se for a última série
+// registrada, os campos do card também passam a mostrar o valor corrigido.
+function updateLoggedSet(day, exercise, setIndex, weight, reps, unit) {
+  const date = sessionDateFor(day);
+  const history = loadHistory(exercise);
+  const idx = history.findIndex(h => h.date === date && h.setIndex === setIndex && entryInDay(h, day));
+  if (idx >= 0) history[idx] = { ...history[idx], weight, reps };
+  else history.push({ date, day, weight, reps, setIndex, notes: '', unit });
+  localStorage.setItem(historyKey(exercise), JSON.stringify(history));
+  const lastIndex = Math.max(...getSetsCompleted(day, exercise));
+  if (setIndex === lastIndex) {
+    const saved = loadProgress(day, exercise);
+    localStorage.setItem(storageKey(day, exercise), JSON.stringify({ ...saved, weight: String(weight), reps: String(reps) }));
+  }
+  trySync();
+  updateExerciseCard(day, exercise);
+}
+
+function openLoggedSetEditor(day, exercise, setIndex) {
+  const entry = todaySetEntries(day, exercise).get(setIndex);
+  const unit = entry ? entry.unit || 'kg' : getLastUsedUnit(exercise);
+  openSetEditor({
+    title: `Série ${setIndex + 1}`,
+    subtitle: exercise,
+    fields: [
+      { key: 'weight', label: `Carga (${unitLabel(unit)})`, value: entry ? entry.weight : '', inputmode: 'decimal' },
+      { key: 'reps', label: 'Reps', value: entry ? entry.reps : '', inputmode: 'numeric' }
+    ],
+    onSave: ({ weight, reps }) => {
+      const w = parseNum(weight);
+      const r = Math.round(parseNum(reps));
+      if (!(w > 0) || !(r > 0)) return false;
+      updateLoggedSet(day, exercise, setIndex, w, r, unit);
+    },
+    onDelete: () => toggleSet(day, exercise, setIndex)
+  });
+}
+
 function bindExerciseCardEvents(day, exercise) {
   const id = safeId(exercise) + safeId(day);
   const card = exerciseListContainer.querySelector(`[data-card-id="${id}"]`);
   if (!card) return;
+  const unskip = () => setSkipped(day, exercise, false);
+  const unskipChip = card.querySelector(`#unskipChip-${id}`);
+  if (unskipChip) unskipChip.addEventListener('click', (e) => { e.stopPropagation(); unskip(); });
+  const unskipBtn = card.querySelector(`#unskip-${id}`);
+  if (unskipBtn) {
+    unskipBtn.addEventListener('click', unskip);
+    return;
+  }
+  // Teclado do celular: "próximo" na carga vai para reps; "ok" em reps registra.
+  // Tocar num campo seleciona o valor, para digitar por cima sem apagar antes.
+  const weightInput = card.querySelector(`#weight-${id}`);
+  const repsInput = card.querySelector(`#reps-${id}`);
+  [weightInput, repsInput].forEach(input => input.addEventListener('focus', () => setTimeout(() => input.select(), 0)));
+  weightInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); repsInput.focus(); } });
+  repsInput.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    repsInput.blur();
+    document.getElementById(`save-${id}`).click();
+  });
   const unitToggle = card.querySelector(`#unitToggle-${id}`);
   if (unitToggle) {
     unitToggle.querySelectorAll('.unit-toggle-btn').forEach(btn => {
@@ -971,12 +1240,25 @@ function bindExerciseCardEvents(day, exercise) {
       toggleNotesBtn.style.display = 'none';
     });
   }
+  const skipBtn = card.querySelector(`#skip-${id}`);
+  if (skipBtn) {
+    skipBtn.addEventListener('click', async () => {
+      const ok = await confirmDialog({
+        title: 'Pular hoje?',
+        text: `${exercise} sai da conta de séries de hoje.\nSe mudar de ideia, toque em "Voltar para o treino" no card.`,
+        confirmLabel: 'Pular exercício'
+      });
+      if (!ok) return;
+      expandedExerciseId = null;
+      setSkipped(day, exercise, true);
+    });
+  }
   card.querySelectorAll('.set-dot').forEach(dot => {
     dot.addEventListener('click', () => {
       const idx = Number(dot.dataset.setIndex);
-      const setsCompleted = getSetsCompleted(day, exercise);
-      if (setsCompleted.includes(idx)) {
-        toggleSet(day, exercise, idx);
+      if (getSetsCompleted(day, exercise).includes(idx)) {
+        // Série já feita: abre para corrigir ou apagar (antes apagava com um toque).
+        openLoggedSetEditor(day, exercise, idx);
       } else {
         document.getElementById(`save-${id}`).click();
       }
@@ -988,23 +1270,22 @@ function bindExerciseCardEvents(day, exercise) {
     if (!w || !r) return;
     const activeUnitBtn = card.querySelector(`#unitToggle-${id} .unit-toggle-btn.active`);
     const unit = activeUnitBtn ? activeUnitBtn.dataset.unit : 'kg';
+    // Com todas as séries feitas não há o que registrar (antes isso gravava uma
+    // série "fantasma" no histórico, sem bolinha na tela).
+    const thisSetIndex = nextFreeSetIndex(day, exercise);
+    if (thisSetIndex < 0) return;
     markSessionStarted(day);
-    const setsCompleted = getSetsCompleted(day, exercise);
     const notesVal = document.getElementById(`notes-${id}`).value;
-    const thisSetIndex = setsCompleted.length;
     const historyBefore = loadHistory(exercise).filter(h => !(h.date === sessionDateFor(day) && h.setIndex === thisSetIndex));
     saveProgressData(day, exercise, w, r, notesVal, thisSetIndex, unit);
-    maybeShowSetFeedback(exercise, historyBefore, parseNum(w), parseNum(r), setsCompleted.length, unit);
+    maybeShowSetFeedback(exercise, historyBefore, parseNum(w), parseNum(r), unit);
     expandedExerciseId = id;
-    const nextSetIndex = setsCompleted.length;
-    if (nextSetIndex < SETS_PER_EXERCISE) {
-      toggleSet(day, exercise, nextSetIndex);
-      startRestFor(exercise);
-    } else {
-      updateExerciseCard(day, exercise);
-      updateSessionBar(day);
-      renderDaySelectors();
-    }
+    toggleSet(day, exercise, thisSetIndex);
+    // Resposta ao registrar: a bolinha "enche" e o celular vibra de leve.
+    const newDot = exerciseListContainer.querySelector(`[data-card-id="${id}"] .set-dot[data-set-index="${thisSetIndex}"]`);
+    if (newDot) newDot.classList.add('pop');
+    if (navigator.vibrate) navigator.vibrate(40);
+    startRestFor(exercise);
   });
   document.getElementById(`rest-${id}`).addEventListener('click', () => { startRestFor(exercise); });
 }
@@ -1042,6 +1323,13 @@ function bindStatsSheet() {
     sheetBackdrop.classList.add('visible');
   });
   document.getElementById('closeStats').addEventListener('click', () => { statsSheet.classList.remove('visible'); sheetBackdrop.classList.remove('visible'); });
+  // Fecha o seletor de exercício da Evolução ao tocar fora dele. Registrado uma
+  // vez só (antes cada troca de exercício acumulava mais um listener).
+  document.addEventListener('click', (e) => {
+    const wrap = document.getElementById('evoSelectWrap');
+    if (!wrap || wrap.contains(e.target)) return;
+    wrap.querySelectorAll('.open').forEach(el => el.classList.remove('open'));
+  });
   sheetBackdrop.addEventListener('click', () => { statsSheet.classList.remove('visible'); sheetBackdrop.classList.remove('visible'); });
   document.querySelectorAll('.sheet-tab').forEach(tab => {
     tab.addEventListener('click', () => {
@@ -1086,7 +1374,7 @@ function getLoggedWorkoutsByDate() {
     map.get(date).add(day);
   };
   getAllTimeCompletedDays().forEach(c => { if (c && c.date && c.day) add(c.date, c.day); });
-  days.forEach(day => workoutData[day].exercises.forEach(ex => loadHistory(ex).forEach(h => add(h.date, day))));
+  days.forEach(day => exercisesEverIn(day).forEach(ex => loadHistory(ex).forEach(h => { if (entryInDay(h, day)) add(h.date, day); })));
   return map;
 }
 
@@ -1116,11 +1404,11 @@ function getExerciseNameFromSafeId(safeExId) {
 }
 
 function getExercisesLoggedForDay(day, dateStr) {
-  const list = workoutData[day] ? workoutData[day].exercises : Object.keys(db);
+  const list = workoutData[day] ? exercisesEverIn(day) : Object.keys(db);
   const result = [];
   list.forEach(ex => {
     const history = loadHistory(ex);
-    const sets = history.filter(h => h.date === dateStr).sort((a, b) => a.setIndex - b.setIndex);
+    const sets = history.filter(h => h.date === dateStr && entryInDay(h, day)).sort((a, b) => a.setIndex - b.setIndex);
     if (sets.length > 0) result.push({ exercise: ex, sets });
   });
   return result;
@@ -1171,6 +1459,7 @@ function openDayDetail(dateStr) {
         <div class="day-detail-sets-row">${setsHtml}</div>
       </div>`;
     });
+    html += `<button type="button" class="day-delete-btn" data-delete-day="${w.day}">Apagar treino de ${dayLabel(w.day)} deste dia</button>`;
   });
   let prsHtml = '';
   if (dayPRs.length > 0) {
@@ -1181,7 +1470,52 @@ function openDayDetail(dateStr) {
       </div>`;
   }
   dayDetailBody.innerHTML = prsHtml + dayMusclesHtml(trained) + html;
+  dayDetailBody.querySelectorAll('[data-delete-day]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const day = btn.dataset.deleteDay;
+      const ok = await confirmDialog({
+        title: 'Apagar este treino?',
+        text: `Todas as séries de ${dayLabel(day)} do dia ${formatDateBR(dateStr)} serão apagadas e o dia sai do calendário. Não dá para desfazer.`,
+        confirmLabel: 'Apagar treino',
+        danger: true
+      });
+      if (!ok) return;
+      deleteWorkoutDay(day, dateStr);
+      dayDetailModal.classList.remove('visible');
+      if (calendarModal.classList.contains('visible')) renderCalendarModal();
+      showToast('Treino apagado', `${dayLabel(day)} de ${formatDateBR(dateStr)} saiu do calendário.`);
+    });
+  });
   dayDetailModal.classList.add('visible');
+}
+
+// Apaga tudo de um treino numa data (série marcada sem querer, treino
+// finalizado por engano): histórico, séries, horários, "finalizado" e pulados.
+function deleteWorkoutDay(day, date) {
+  exercisesEverIn(day).forEach(ex => {
+    const history = JSON.parse(localStorage.getItem(historyKey(ex)) || '[]');
+    const kept = history.filter(h => !(h.date === date && entryInDay(h, day)));
+    if (kept.length !== history.length) localStorage.setItem(historyKey(ex), JSON.stringify(kept));
+    localStorage.removeItem(`series:${safeId(day)}:${safeId(ex)}:${date}`);
+  });
+  localStorage.removeItem(`sessaoInicio:${safeId(day)}:${date}`);
+  localStorage.removeItem(`sessaoFim:${safeId(day)}:${date}`);
+  localStorage.removeItem(`pulados:${safeId(day)}:${date}`);
+  const allTime = getAllTimeCompletedDays().filter(c => !(c && c.day === day && c.date === date));
+  localStorage.setItem('completedDaysAllTime', JSON.stringify(allTime));
+  const activeKey = `sessaoAtivaData:${safeId(day)}`;
+  if (localStorage.getItem(activeKey) === date) {
+    localStorage.removeItem(activeKey);
+    localStorage.removeItem(activityKey(day));
+  }
+  trySync();
+  if (day === currentDay) {
+    renderExercises(currentDay);
+    updateSessionBar(currentDay);
+    updateLiveTimer();
+  }
+  renderDaySelectors();
+  updateHeaderTitle();
 }
 
 function bindDayDetailModal() {
@@ -1326,15 +1660,24 @@ function groupHistoryByDate(history) {
     if (!map.has(h.date)) map.set(h.date, []);
     map.get(h.date).push(h);
   });
+  // Séries na ordem em que foram feitas (S1, S2, S3), mesmo depois de corrigir ou
+  // apagar e registrar de novo uma delas.
   return [...map.entries()]
-    .map(([date, sets]) => ({ date, sets }))
+    .map(([date, sets]) => ({ date, sets: sets.sort((a, b) => (a.setIndex ?? 0) - (b.setIndex ?? 0)) }))
     .sort((a, b) => a.date.localeCompare(b.date));
 }
 
 
+// Todos os exercícios que podem ter histórico: catálogo, criados por você e os
+// que já saíram de algum treino.
+function allKnownExercises() {
+  const all = new Set(Object.keys(db));
+  days.forEach(d => exercisesEverIn(d).forEach(ex => all.add(ex)));
+  return all;
+}
+
 function getExercisesWithHistoryGrouped() {
-  const allEx = new Set();
-  days.forEach(d => workoutData[d].exercises.forEach(ex => allEx.add(ex)));
+  const allEx = allKnownExercises();
   const grouped = {};
   allEx.forEach(ex => {
     if (loadHistory(ex).length === 0) return;
@@ -1449,7 +1792,7 @@ function renderEvolutionTab() {
   const grouped = getExercisesWithHistoryGrouped();
   const catNames = Object.keys(grouped);
   if (catNames.length === 0) {
-    evolutionBody.innerHTML = '<div style="padding:20px;text-align:center;color:#767d83;font-size:13px;">Nenhum histórico registrado ainda. Registre suas séries para ver sua evolução aqui.</div>';
+    evolutionBody.innerHTML = emptyStateHtml('chart', 'Sem evolução ainda', 'Registre suas séries para ver sua evolução aqui.');
     return;
   }
   const allExercisesFlat = catNames.flatMap(c => grouped[c]);
@@ -1510,12 +1853,6 @@ function renderEvolutionTab() {
       renderEvolutionTab();
     });
   });
-  document.addEventListener('click', (e) => {
-    if (options && header && !header.contains(e.target) && !options.contains(e.target)) {
-      options.classList.remove('open');
-      header.classList.remove('open');
-    }
-  });
   renderEvolutionContent(evoSelectedExercise);
 }
 
@@ -1540,7 +1877,7 @@ function renderEvolutionContent(exercise) {
       ${unitsAvailable.map(u => `<button type="button" class="unit-toggle-btn ${u === evoSelectedUnit ? 'active' : ''}" data-unit="${u}">${unitLabel(u).charAt(0).toUpperCase() + unitLabel(u).slice(1)}</button>`).join('')}
     </div>` : '';
   if (totalSets === 0) {
-    content.innerHTML = unitSwitchHtml + `<div class="evo-chart-card"><div class="evo-chart-empty">Nenhum registro em ${unitLabel(evoSelectedUnit)} ainda para este exercício.</div></div>`;
+    content.innerHTML = unitSwitchHtml + `<div class="evo-chart-card">${emptyStateHtml('chart', `Nenhum registro em ${unitLabel(evoSelectedUnit)} ainda`)}</div>`;
     content.querySelectorAll('.unit-toggle-btn').forEach(btn => {
       btn.addEventListener('click', () => { evoSelectedUnit = btn.dataset.unit; renderEvolutionContent(exercise); });
     });
@@ -1604,13 +1941,14 @@ function renderEvolutionContent(exercise) {
         <div class="evo-tooltip-placeholder">Toque em um ponto do gráfico para ver os detalhes daquele dia</div>
       </div>`;
   } else {
-    chartHtml = `<div class="evo-chart-card"><div class="evo-chart-empty">Registre mais uma série para começar a ver seu gráfico de evolução.</div></div>`;
+    chartHtml = `<div class="evo-chart-card">${emptyStateHtml('chart', 'Falta pouco', 'Registre mais uma série para começar a ver seu gráfico de evolução.')}</div>`;
   }
   const reversedSessions = [...sessions].reverse();
   const visibleSessions = reversedSessions.slice(0, EVO_SESSIONS_VISIBLE);
   const hiddenSessions = reversedSessions.slice(EVO_SESSIONS_VISIBLE);
   function renderSessionCard(session) {
-    const isToday = session.date === todayString() || session.date === yesterdayString();
+    // Antes o treino de ontem também aparecia como "HOJE".
+    const dayTag = session.date === todayString() ? 'HOJE' : session.date === yesterdayString() ? 'ONTEM' : null;
     let bestIdx = 0;
     session.sets.forEach((s, i) => {
       if (estimatedMax(s.weight, s.reps) > estimatedMax(session.sets[bestIdx].weight, session.sets[bestIdx].reps)) bestIdx = i;
@@ -1638,7 +1976,7 @@ function renderEvolutionContent(exercise) {
     return `
       <div class="evo-session-card">
         <div class="evo-session-header-row">
-          <div class="evo-session-date">${isToday ? '<span class="evo-today-tag">HOJE</span>' : formatDateBR(session.date)}</div>
+          <div class="evo-session-date">${dayTag ? `<span class="evo-today-tag">${dayTag}</span>` : formatDateBR(session.date)}</div>
           ${trendHtml}
         </div>
         <div class="evo-sets-row">${setsHtml}</div>
@@ -1749,28 +2087,29 @@ function renderCatalogTab() {
 }
 
 function renderCategorizedStats() {
-  const allEx = new Set();
-  days.forEach(d => workoutData[d].exercises.forEach(ex => allEx.add(ex)));
+  const allEx = allKnownExercises();
   const categories = {};
   allEx.forEach(ex => {
     const history = loadHistory(ex);
     if (history.length === 0) return;
-    const last = history[history.length - 1];
-    const lastUnit = last.unit || 'kg';
-    const sameUnitHistory = history.filter(h => (h.unit || 'kg') === lastUnit);
-    const prev = sameUnitHistory.length > 1 ? sameUnitHistory[sameUnitHistory.length - 2] : null;
-    let trend = '<span class="stat-trend">—</span>';
+    const lastUnit = history[history.length - 1].unit || 'kg';
+    // Melhor série de cada treino. Antes comparava a última série com a
+    // penúltima do mesmo treino, então quase sempre mostrava "↑".
+    const sessionBests = groupHistoryByDate(history.filter(h => (h.unit || 'kg') === lastUnit)).map(s => bestSetOf(s.sets));
+    const last = sessionBests[sessionBests.length - 1];
+    const prev = sessionBests.length > 1 ? sessionBests[sessionBests.length - 2] : null;
+    let trend = '<span class="stat-trend">1º treino</span>';
     if (prev) {
-      const diff = last.weight - prev.weight;
-      if (diff > 0) trend = `<span class="stat-trend up">↑ ${formatLoad(diff, lastUnit)}</span>`;
-      else if (diff < 0) trend = `<span class="stat-trend down">↓ ${formatLoad(Math.abs(diff), lastUnit)}</span>`;
+      const delta = describeLoadDelta(last, prev, lastUnit);
+      const arrow = { up: '↑', down: '↓', same: '=' }[delta.dir];
+      trend = `<span class="stat-trend ${delta.dir === 'same' ? '' : delta.dir}">${arrow} ${delta.text.replace(/^[+-]/, '')} vs treino anterior</span>`;
     }
     const catName = db[ex] ? db[ex].cat : "Outros";
     if (!categories[catName]) categories[catName] = [];
-    categories[catName].push({ ex, last, trend, sparkline: buildSparklineSVG(sameUnitHistory) });
+    categories[catName].push({ ex, last, trend, sparkline: buildSparklineSVG(sessionBests) });
   });
   if (Object.keys(categories).length === 0) {
-    statsBody.innerHTML = '<div style="padding:20px;text-align:center;color:#767d83;font-size:13px;">Nenhum histórico registrado.</div>';
+    statsBody.innerHTML = emptyStateHtml('list', 'Nenhum histórico ainda', 'Suas cargas aparecem aqui assim que você registrar a primeira série.');
     return;
   }
   let html = '';
@@ -1822,8 +2161,11 @@ function calculateWeeklyVolume() {
     let realEx = null;
     for (const real in db) { if (safeId(real) === parts[2]) realEx = real; }
     if (!realEx || !db[realEx]) continue;
-    if (vol[db[realEx].prim] !== undefined) vol[db[realEx].prim] += numSets;
-    db[realEx].sec.forEach(s => {
+    const group = m => VOLUME_GROUP[m] || m;
+    const prim = group(db[realEx].prim);
+    if (vol[prim] !== undefined) vol[prim] += numSets;
+    // Auxiliar do mesmo grupo do principal (ex.: glúteo máximo na abdutora) não soma de novo.
+    [...new Set(db[realEx].sec.map(group))].filter(s => s !== prim).forEach(s => {
       if (vol[s] !== undefined) vol[s] += (numSets * 0.5);
     });
   }
@@ -1879,14 +2221,15 @@ function calculateWeeklyVolume() {
 
 function migrateWorkoutDate(day, fromDate, toDate) {
   if (!day || !workoutData[day] || !fromDate || !toDate || fromDate === toDate) return false;
-  const exercises = workoutData[day].exercises;
+  const exercises = exercisesEverIn(day);
   let movedAny = false;
 
   exercises.forEach(ex => {
     const hKey = historyKey(ex);
     const rawHistory = JSON.parse(localStorage.getItem(hKey) || '[]');
-    if (rawHistory.some(h => h.date === fromDate)) movedAny = true;
-    const history = rawHistory.map(h => h.date === fromDate ? { ...h, date: toDate } : h);
+    const isMoved = h => h.date === fromDate && entryInDay(h, day);
+    if (rawHistory.some(isMoved)) movedAny = true;
+    const history = rawHistory.map(h => isMoved(h) ? { ...h, date: toDate } : h);
     localStorage.setItem(hKey, JSON.stringify(history));
 
     const oldSets = `series:${safeId(day)}:${safeId(ex)}:${fromDate}`;
@@ -1923,23 +2266,11 @@ function migrateWorkoutDate(day, fromDate, toDate) {
     localStorage.setItem(activeKey, toDate);
   }
 
-  const completed = getCompletedDays().map(c => (c && c.day === day && c.date === fromDate) ? { ...c, date: toDate } : c);
-  if (!completed.some(c => c && c.day === day && c.date === toDate)) {
-    completed.push({ day, date: toDate });
-  }
-  localStorage.setItem('completedDays', JSON.stringify(completed));
-
   const allTime = getAllTimeCompletedDays().map(c => (c && c.day === day && c.date === fromDate) ? { ...c, date: toDate } : c);
   if (!allTime.some(c => c && c.day === day && c.date === toDate)) {
     allTime.push({ day, date: toDate });
   }
-  localStorage.setItem('completedDaysAllTime', JSON.stringify(allTime.slice(-200)));
-
-  let allDates = JSON.parse(localStorage.getItem('allCompletedDates') || '[]');
-  const stillHasFrom = getCompletedDays().some(c => c && c.date === fromDate) || getAllTimeCompletedDays().some(c => c && c.date === fromDate);
-  if (!stillHasFrom) allDates = allDates.filter(d => d !== fromDate);
-  if (!allDates.includes(toDate)) allDates.push(toDate);
-  localStorage.setItem('allCompletedDates', JSON.stringify(allDates));
+  localStorage.setItem('completedDaysAllTime', JSON.stringify(allTime));
 
   trySync();
   return true;
@@ -1952,22 +2283,26 @@ function bindDateFixTool() {
   const btn = document.getElementById('fixDateBtn');
   if (!select || !btn) return;
   select.innerHTML = orderedDays.map(d => `<option value="${d}">${dayLabel(d)}</option>`).join('');
-  btn.addEventListener('click', () => {
+  btn.addEventListener('click', async () => {
     const day = select.value;
     const fromDate = fromInput.value;
     const toDate = toInput.value;
-    if (!fromDate || !toDate) { alert('Preencha as duas datas.'); return; }
-    if (fromDate === toDate) { alert('As datas precisam ser diferentes.'); return; }
-    if (!confirm(`Mover todos os registros do treino ${dayLabel(day)} do dia ${fromDate.split('-').reverse().join('/')} para ${toDate.split('-').reverse().join('/')} e marcar como concluído no calendário?`)) return;
-    const ok = migrateWorkoutDate(day, fromDate, toDate);
-    if (!ok) { alert('Não encontramos nenhum registro desse treino na data informada.'); return; }
+    const fail = text => alertDialog({ title: 'Corrigir data', text });
+    if (!fromDate || !toDate) return fail('Preencha as duas datas.');
+    if (fromDate === toDate) return fail('As datas precisam ser diferentes.');
+    const ok = await confirmDialog({
+      title: 'Mover o treino?',
+      text: `Todos os registros de ${dayLabel(day)} do dia ${formatDateBR(fromDate)} vão para ${formatDateBR(toDate)}, e o dia fica marcado como concluído no calendário.`,
+      confirmLabel: 'Mover registros'
+    });
+    if (!ok) return;
+    if (!migrateWorkoutDate(day, fromDate, toDate)) return fail('Não encontramos nenhum registro desse treino na data informada.');
     fromInput.value = '';
     toInput.value = '';
     updateHeaderTitle();
     renderDaySelectors();
     renderExercises(currentDay);
     updateSessionBar(currentDay);
-    updateStreakBadge();
     showToast('Corrigido', 'Data do treino foi atualizada com sucesso!');
   });
 }
@@ -1980,7 +2315,7 @@ function bindBackupSystem() {
   const syncNowBtn = document.getElementById('syncNowBtn');
   if (syncNowBtn) {
     syncNowBtn.addEventListener('click', () => {
-      trySync();
+      syncNow();
     });
   }
 
@@ -2009,43 +2344,104 @@ function bindBackupSystem() {
   }
 
   document.getElementById('cloudRestoreBtn').addEventListener('click', async () => {
-    const code = prompt("Digite o Código de Sincronização do outro celular:");
+    const code = await promptDialog({
+      title: 'Baixar de outro código',
+      text: 'Digite o código de sincronização do outro celular (aparece em Configurações nele).',
+      placeholder: 'ABC123',
+      confirmLabel: 'Buscar backup'
+    });
     if (!code) return;
+    const upper = code.toUpperCase();
+    let data;
     try {
-      const docSnap = await getDoc(doc(dbFirestore, "users", code.toUpperCase()));
-      if (docSnap.exists()) {
-        if (confirm("Isso vai apagar os treinos deste celular e baixar os da nuvem. Continuar?")) {
-          localStorage.clear();
-          const data = docSnap.data();
-          for (const k in data) localStorage.setItem(k, data[k]);
-          setSyncId(code.toUpperCase());
-          if (syncDisplay) syncDisplay.innerText = code.toUpperCase();
-          trySync();
-          showToast('Sucesso', 'Treinos restaurados da nuvem!');
-          setTimeout(() => location.reload(), 1200);
-        }
-      } else {
-        alert("Código não encontrado na nuvem.");
-      }
+      data = await fetchCloudBackup(upper);
     } catch (e) {
-      alert("Erro ao buscar dados. Verifique a internet.");
+      alertDialog({ title: 'Sem conexão', text: 'Não deu para buscar o backup. Verifique a internet e tente de novo.' });
+      return;
     }
+    if (!data) { alertDialog({ title: 'Código não encontrado', text: `Não existe backup na nuvem com o código ${upper}.` }); return; }
+    const ok = await confirmDialog({
+      title: 'Substituir os treinos?',
+      text: 'Os treinos deste celular serão apagados e trocados pelos do backup na nuvem.',
+      confirmLabel: 'Baixar e substituir',
+      danger: true
+    });
+    if (!ok) return;
+    replaceLocalData(data);
+    setSyncId(upper);
+    localStorage.setItem('syncId', upper);
+    showToast('Sucesso', 'Treinos restaurados da nuvem!');
+    setTimeout(() => location.reload(), 1200);
   });
 
-  document.getElementById('clearDataBtn').addEventListener('click', () => {
-    if (confirm("Apagar TUDO permanentemente? Essa ação não pode ser desfeita.")) {
+  document.getElementById('exportFileBtn').addEventListener('click', exportBackupFile);
+  const importInput = document.getElementById('importFileInput');
+  document.getElementById('importFileBtn').addEventListener('click', () => importInput.click());
+  importInput.addEventListener('change', async () => {
+    const file = importInput.files && importInput.files[0];
+    importInput.value = '';
+    if (!file) return;
+    const notBackup = () => alertDialog({ title: 'Arquivo inválido', text: 'Esse arquivo não é um backup do Treino.' });
+    let parsed;
+    try {
+      parsed = JSON.parse(await file.text());
+    } catch (e) {
+      notBackup();
+      return;
+    }
+    const data = parsed && parsed.app === 'treino' && parsed.data;
+    if (!data || typeof data !== 'object' || Object.values(data).some(v => typeof v !== 'string')) {
+      notBackup();
+      return;
+    }
+    const when = parsed.exportedAt ? ` de ${new Date(parsed.exportedAt).toLocaleDateString('pt-BR')}` : '';
+    const ok = await confirmDialog({
+      title: 'Restaurar backup?',
+      text: `Os treinos deste celular serão trocados pelos do backup${when}.`,
+      confirmLabel: 'Restaurar',
+      danger: true
+    });
+    if (!ok) return;
+    replaceLocalData(data);
+    showToast('Sucesso', 'Backup restaurado do arquivo!');
+    setTimeout(() => location.reload(), 1200);
+  });
+
+  document.getElementById('clearDataBtn').addEventListener('click', async () => {
+    const ok = await confirmDialog({
+      title: 'Apagar tudo deste celular?',
+      text: `Essa ação não pode ser desfeita.\n\nO backup na nuvem NÃO é apagado: anote o código ${syncId} para recuperar depois em "Baixar de outro código".`,
+      confirmLabel: 'Apagar tudo',
+      danger: true
+    });
+    if (ok) {
+      // Sem sincronizar depois: antes isso subia um backup vazio por cima do da nuvem.
+      // Ao recarregar, este celular ganha um código novo.
+      cancelPendingSync();
       localStorage.clear();
-      trySync();
       location.reload();
     }
   });
 }
 
+function replaceLocalData(data) {
+  cancelPendingSync();
+  localStorage.clear();
+  for (const k in data) localStorage.setItem(k, data[k]);
+}
+
+async function exportBackupFile() {
+  const payload = { app: 'treino', version: 1, exportedAt: new Date().toISOString(), data: snapshotLocalData() };
+  const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
+  await shareOrDownload(blob, `treino-backup-${todayString()}.json`, 'Backup do Treino');
+}
+
+
 window.showExerciseGuide = function (exercise) {
   const info = db[exercise];
   const modal = document.getElementById('infoModal');
   document.getElementById('infoTitle').innerText = exercise;
-  document.getElementById('infoText').innerText = info ? info.tip : "Foque na contração e controle do movimento.";
+  document.getElementById('infoText').innerText = info && info.tip ? info.tip : "Foque na contração e controle do movimento.";
   const mediaWrap = document.getElementById('infoMedia');
   if (info && info.img) {
     mediaWrap.style.display = 'block';
@@ -2089,6 +2485,7 @@ function bindInfoModal() {
       document.getElementById('bodyModal').classList.remove('visible');
       document.getElementById('catalogModal').classList.remove('visible');
       document.getElementById('configModal').classList.remove('visible');
+      document.getElementById('planModal').classList.remove('visible');
       document.getElementById('calendarModal').classList.remove('visible');
       document.getElementById('dayDetailModal').classList.remove('visible');
       closeRestOverlay();

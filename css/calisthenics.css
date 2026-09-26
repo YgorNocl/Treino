@@ -146,11 +146,6 @@ body.mode-cali .evo-tooltip-pr { box-shadow: 0 2px 8px rgba(var(--accent-rgb), 0
 body.mode-cali .evo-set-block.best, body.mode-cali .evo-set-chip.best { background: rgba(var(--accent-rgb), 0.08); }
 body.mode-cali .custom-select-option.selected { background: rgba(var(--accent-rgb), 0.05); }
 
-.cali-today { background: linear-gradient(160deg, rgba(var(--accent-rgb), 0.12), rgba(var(--accent-rgb), 0.02)); border: 1px solid rgba(var(--accent-rgb), 0.28); border-radius: var(--radius); padding: 14px 16px; margin-bottom: 14px; }
-.cali-today-main { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.cali-today-count { display: flex; align-items: baseline; gap: 8px; font-family: var(--font-mono); font-weight: 700; font-size: 28px; line-height: 1; color: var(--accent); }
-.cali-today-count small { font-size: 12px; font-weight: 400; color: var(--text-faint); }
-.cali-clock { font-family: var(--font-mono); font-size: 14px; font-weight: 700; color: var(--accent); background: rgba(var(--accent-rgb), 0.1); padding: 4px 10px; border-radius: 8px; border: 1px solid var(--accent-dim); letter-spacing: 1px; }
 .cali-today-stats { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 14px; margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(var(--accent-rgb), 0.18); font-size: 12px; color: var(--text-dim); }
 .cali-today-stats b { margin-right: 5px; font-family: var(--font-mono); font-size: 13px; color: var(--text); }
 .cali-today-stats .cali-link-btn { margin-left: auto; padding: 0; }

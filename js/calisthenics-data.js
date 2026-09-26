@@ -479,7 +479,7 @@ export const CALI_SKILLS = [
   {
     id: 'mobilidade-coluna',
     short: 'Coluna',
-    muscles: { prim: ['Coluna Torácica', 'Lombar'], sec: ['Core'] },
+    muscles: { prim: ['Meio das Costas', 'Lombar'], sec: ['Core'] },
     area: 'mobilidade',
     emoji: '🌀',
     name: 'Mobilidade de Coluna',

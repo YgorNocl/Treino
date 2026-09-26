@@ -132,7 +132,7 @@ function updateRestDisplay() {
   const m = Math.floor(restRemaining / 60);
   const s = restRemaining % 60;
   restTimeEl.textContent = `${m}:${String(s).padStart(2, '0')}`;
-  restProgressEl.style.transform = `scaleX(${Math.min(restRemaining / restSecondsCurrent, 1)})`;
+  restProgressEl.style.setProperty('--p', Math.max(0, Math.min(restRemaining / restSecondsCurrent, 1)));
 }
 
 export function initRestTimer() {

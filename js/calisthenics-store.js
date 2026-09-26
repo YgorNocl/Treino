@@ -2,7 +2,6 @@ import { todayString, pad2, dateStrFromDate, getWeekStart, getWeekEnd } from './
 import { trySync } from './sync.js';
 import { MODE_STEP_LIST } from './calisthenics-data.js';
 
-const LOG_LIMIT = 600;
 const MODE_KEY = 'app:mode';
 const REST_KEY_PREFIX = 'cali:rest:';
 const PREP_KEY_PREFIX = 'cali:prep:';
@@ -67,6 +66,18 @@ export function finishDay(mode, date) {
   trySync();
 }
 
+// Apaga todas as séries do modo numa data e o "finalizado" dela (treino
+// marcado sem querer).
+export function deleteDay(mode, date) {
+  (MODE_STEP_LIST[mode] || []).forEach(step => {
+    const log = loadLog(step.id);
+    const kept = log.filter(e => e.d !== date);
+    if (kept.length !== log.length) localStorage.setItem(logKey(step.id), JSON.stringify(kept));
+  });
+  localStorage.removeItem(`${FINISHED_KEY_PREFIX}${mode}:${date}`);
+  trySync();
+}
+
 export function loadLog(stepId) {
   const list = readJSON(logKey(stepId), []);
   if (!Array.isArray(list)) return [];
@@ -79,9 +90,18 @@ export function addSet(stepId, value, note) {
   const log = loadLog(stepId);
   const entry = { d: todayString(), v: value, n: note || '', t: Date.now() };
   log.push(entry);
-  localStorage.setItem(logKey(stepId), JSON.stringify(log.slice(-LOG_LIMIT)));
+  localStorage.setItem(logKey(stepId), JSON.stringify(log));
   trySync();
   return entry;
+}
+
+export function updateSet(stepId, t, value) {
+  const log = loadLog(stepId);
+  const entry = log.find(e => e.t === t);
+  if (!entry) return;
+  entry.v = value;
+  localStorage.setItem(logKey(stepId), JSON.stringify(log));
+  trySync();
 }
 
 export function removeSet(stepId, t) {

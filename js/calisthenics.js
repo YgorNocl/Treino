@@ -5,12 +5,18 @@ import {
   fmtSeconds,
   fmtClock,
   fmtStopwatch,
-  escapeHtml
+  escapeHtml,
+  CALI_SKILL_MAP
 } from './calisthenics-data.js';
 import * as store from './calisthenics-store.js';
 import { initPanels, openCalendar, openProgress, openGuide, openDay, closePanels, sessionRowHtml } from './calisthenics-panels.js';
 import { todayString, parseNum } from './utils.js';
 import { primeRestAlert, alertRestEnd } from './rest-timer.js';
+import { openSetEditor } from './set-editor.js';
+import { confirmDialog } from './dialog.js';
+import { showSummaryModal, longDateLabel, shareOrDownload } from './summary.js';
+import { buildSummaryImage } from './share-card.js';
+import { regionLevels } from './body-map.js';
 
 const $ = id => document.getElementById(id);
 const root = $('caliRoot');
@@ -104,7 +110,7 @@ function updateHeader(index) {
   const meta = MODE_META[state.mode];
   if (!meta) return;
   const count = store.getWeekSessionCount(index);
-  $(meta.subtitleEl).innerText = `🔥 ${count} ${count === 1 ? 'treino' : 'treinos'} nesta semana`;
+  $(meta.subtitleEl).innerText = `${count} ${count === 1 ? 'treino' : 'treinos'} nesta semana`;
 }
 
 function render() {
@@ -114,9 +120,24 @@ function render() {
   updateHeader(index);
 }
 
+// Séries feitas / previstas hoje no treino selecionado (ex.: Flexões), como a
+// barra "Séries de hoje" da academia.
+function skillProgress(skill) {
+  const today = todayString();
+  let done = 0;
+  let total = 0;
+  skill.steps.forEach(step => {
+    total += step.goal.sets;
+    done += Math.min(store.setsOn(step.id, today).length, step.goal.sets);
+  });
+  return { done, total };
+}
+
 function todayCardHtml(today) {
   const sets = today ? today.sets : 0;
   const finished = store.isDayFinished(state.mode, todayString());
+  const { done, total } = skillProgress(selectedSkill());
+  const pct = total > 0 ? Math.round((done / total) * 100) : 0;
   const stats = sets > 0
     ? `<div class="cali-today-stats">
         ${today.reps > 0 ? `<span><b>${today.reps}</b>reps</span>` : ''}
@@ -126,11 +147,15 @@ function todayCardHtml(today) {
       </div>`
     : '';
   return `
-    <section class="cali-today">
-      <div class="cali-today-main">
-        <div class="cali-today-count">${sets}<small>${sets === 1 ? 'série hoje' : 'séries hoje'}</small></div>
-        <div class="cali-clock" id="caliClock">${clockText(today, finished)}</div>
+    <section class="session-bar cali-session">
+      <div class="session-info">
+        <div class="session-info-left">
+          <span class="session-label">SÉRIES DE HOJE</span>
+          <span class="session-count">${done}<span class="session-total">/${total}</span></span>
+        </div>
+        <div class="workout-timer" id="caliClock">${clockText(today, finished)}</div>
       </div>
+      <div class="session-track"><div class="session-fill" style="width: ${pct}%"></div></div>
       ${stats}
     </section>`;
 }
@@ -184,11 +209,60 @@ function bindSummary() {
   const sets = state.today ? state.today.sets : 0;
   $('caliFinishWrap').innerHTML = finishButtonHtml(store.isDayFinished(state.mode, todayString()), sets);
   const finishBtn = $('caliFinishBtn');
-  if (finishBtn) finishBtn.addEventListener('click', () => {
+  if (finishBtn) finishBtn.addEventListener('click', async () => {
+    const skill = selectedSkill();
+    const { done, total } = skillProgress(skill);
+    // Igual à academia: confirma quando ainda faltam séries no treino aberto.
+    if (done < total && !(await confirmDialog({
+      title: 'Finalizar treino?',
+      text: `Ainda ${total - done === 1 ? 'falta 1 série' : `faltam ${total - done} séries`} de ${skill.name}.`,
+      confirmLabel: 'Finalizar mesmo assim'
+    }))) return;
     store.finishDay(state.mode, todayString());
     vibrate([120, 60, 120]);
     render();
+    showFinishSummary();
   });
+}
+
+// Resumo ao finalizar, igual ao da academia (com a imagem do treino).
+function showFinishSummary() {
+  const mode = state.mode;
+  const date = todayString();
+  const day = store.buildDayIndex(mode).get(date);
+  const items = store.getDayDetail(mode, date);
+  if (!day || items.length === 0) return;
+  const isMobi = mode === 'mobi';
+  const duration = day.last - day.first >= 60000 ? fmtSeconds((day.last - day.first) / 1000) : '< 1 min';
+  const prs = isMobi ? [] : items.filter(item => item.isPR).map(item => ({ name: item.step.name, value: fmtValue(item.step, item.best) }));
+  showSummaryModal({
+    stats: [
+      { value: day.sets, label: 'Séries' },
+      { value: duration, label: 'Duração' },
+      isMobi ? { value: items.length, label: 'Exercícios' } : { value: prs.length, label: 'PRs' }
+    ],
+    prs,
+    onShare: () => shareFinishImage(mode, date, day, items, duration)
+  });
+}
+
+async function shareFinishImage(mode, date, day, items, duration) {
+  const isMobi = mode === 'mobi';
+  const skills = [...new Set(items.map(item => item.step.skillId))].map(id => CALI_SKILL_MAP[id]).filter(s => s && s.muscles);
+  const levelByName = {};
+  skills.forEach(s => s.muscles.sec.forEach(m => { levelByName[m] = 'secondary'; }));
+  skills.forEach(s => s.muscles.prim.forEach(m => { levelByName[m] = 'primary'; }));
+  const third = isMobi
+    ? { value: String(items.length), label: 'Exercícios' }
+    : day.reps > 0 ? { value: String(day.reps), label: 'Reps' } : { value: fmtSeconds(day.holdSeconds), label: 'Sob tensão' };
+  const blob = await buildSummaryImage({
+    title: MODE_META[mode].title,
+    dateLabel: longDateLabel(date),
+    stats: [{ value: duration, label: 'Duração' }, { value: String(day.sets), label: 'Séries' }, third],
+    exercises: items.map(item => ({ name: item.step.name, best: fmtValue(item.step, item.best), pr: !isMobi && item.isPR })),
+    levels: regionLevels(levelByName)
+  });
+  await shareOrDownload(blob, `${isMobi ? 'mobilidade' : 'calistenia'}-${date}.png`, `Treino de ${MODE_META[mode].title}`);
 }
 
 // Atualiza só o resumo do dia, o botão de finalizar e os botões do topo, sem
@@ -227,7 +301,7 @@ function setTrackerHtml(step, todaySets, label) {
   const dots = Array.from({ length: count }, (_, i) => {
     const set = todaySets[i];
     if (!set) return `<span class="set-dot">${i + 1}</span>`;
-    return `<button type="button" class="set-dot filled" data-remove="${set.t}" aria-label="Remover série ${i + 1}">${label(set)}</button>`;
+    return `<button type="button" class="set-dot filled" data-edit="${set.t}" data-index="${i}" aria-label="Editar série ${i + 1}">${label(set)}</button>`;
   }).join('');
   return `<div class="set-tracker" id="caliDots-${step.id}">${dots}</div>`;
 }
@@ -373,8 +447,8 @@ function bindStepCard(step) {
     }
   });
 
-  card.querySelectorAll('[data-remove]').forEach(btn => {
-    btn.addEventListener('click', () => removeSet(step, Number(btn.dataset.remove)));
+  card.querySelectorAll('[data-edit]').forEach(btn => {
+    btn.addEventListener('click', () => editSet(step, Number(btn.dataset.edit), Number(btn.dataset.index)));
   });
 
   if (step.area === 'mobilidade') {
@@ -435,12 +509,18 @@ function bindStepCard(step) {
   });
 }
 
+function popLastSetDot(step) {
+  const dots = root.querySelectorAll(`[data-step-id="${step.id}"] .set-dot.filled`);
+  if (dots.length) dots[dots.length - 1].classList.add('pop');
+}
+
 function registerMobility(step) {
   cancelTimer();
   store.addSet(step.id, step.goal.value, '');
   vibrate(80);
   state.openStepId = step.id;
   updateStepCard(step);
+  popLastSetDot(step);
 }
 
 function registerSet(step) {
@@ -463,15 +543,34 @@ function registerSet(step) {
   vibrate(60);
   state.openStepId = step.id;
   updateStepCard(step);
+  popLastSetDot(step);
   // Igual à academia: registrou uma série que não é a última, o descanso já começa.
   if (store.setsOn(step.id, todayString()).length < step.goal.sets) startRestFor(step);
 }
 
-function removeSet(step, t) {
-  if (!confirm('Remover esta série?')) return;
-  store.removeSet(step.id, t);
-  state.openStepId = step.id;
-  updateStepCard(step);
+// Mesmo editor da academia: tocar numa série feita permite corrigir o valor ou apagar.
+function editSet(step, t, index) {
+  const set = store.setsOn(step.id, todayString()).find(s => s.t === t);
+  if (!set) return;
+  const isTime = step.mode === 'time';
+  const max = isTime ? 3600 : 500;
+  openSetEditor({
+    title: `Série ${index + 1}`,
+    subtitle: step.name,
+    fields: [{ key: 'v', label: isTime ? 'Tempo (segundos)' : 'Repetições', value: set.v, inputmode: 'numeric' }],
+    onSave: ({ v }) => {
+      const value = Math.round(parseNum(v));
+      if (!(value >= 1 && value <= max)) return false;
+      store.updateSet(step.id, t, value);
+      state.openStepId = step.id;
+      updateStepCard(step);
+    },
+    onDelete: () => {
+      store.removeSet(step.id, t);
+      state.openStepId = step.id;
+      updateStepCard(step);
+    }
+  });
 }
 
 function paintIdleAll() {
@@ -568,7 +667,7 @@ function tickRest() {
   const m = Math.floor(rest.remaining / 60);
   const sec = rest.remaining % 60;
   $('caliRestTime').textContent = `${m}:${String(sec).padStart(2, '0')}`;
-  $('caliRestProgress').style.transform = `scaleX(${Math.min(rest.remaining / rest.total, 1)})`;
+  $('caliRestProgress').style.setProperty('--p', Math.max(0, Math.min(rest.remaining / rest.total, 1)));
   if (rest.remaining <= 0) {
     hideRest();
     alertRestEnd();
@@ -645,7 +744,7 @@ function stopClock() {
 
 function init() {
   if (!root) return;
-  initPanels({ getMode: () => state.mode });
+  initPanels({ getMode: () => state.mode, onDataChanged: () => render() });
   bindRest();
   document.querySelectorAll('#modeSwitch .mode-btn').forEach(btn => {
     btn.addEventListener('click', () => {
