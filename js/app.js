@@ -1,20 +1,40 @@
 import { syncId, setSyncId, fetchCloudBackup, snapshotLocalData, MEDIA_BASE, db, workoutData, days, setsFor, exercisesEverIn, savePlan, addCustomExercise, MUSCLE_CATEGORIES, VOLUME_GROUP } from './data.js';
 import { trySync, syncNow, cancelPendingSync, updateSyncStatus } from './sync.js';
 import { closeRestOverlay, initRestTimer, startRestFor } from './rest-timer.js';
-import { pad2, todayString, yesterdayString, parseNum, safeId, unitLabel, formatLoad, estimatedMax, formatDateBR, formatDateShortBR, dateStrFromDate, getWeekStart, getWeekEnd, emptyStateHtml, dayColorsBackground } from './utils.js';
+import { pad2, todayString, yesterdayString, parseNum, safeId, unitLabel, formatLoad, compareSets, isBetterSet, formatDateBR, formatDateShortBR, getWeekStart, getWeekEnd, emptyStateHtml, revealCard, searchKey, niceTicks, monthsAgo, readJSON, readListCached } from './utils.js';
+import { monthCalendarHtml, monthNavHtml, calendarLegendHtml, calendarStatsHtml, yearSummaryHtml, formatVolume, bindMonthCalendar } from './calendar.js';
 import { musclesHtml, bodyMapHtml, regionLevels } from './body-map.js';
 import { buildSummaryImage } from './share-card.js';
 import { openSetEditor } from './set-editor.js';
 import { confirmDialog, alertDialog, promptDialog } from './dialog.js';
 import { initBackNav } from './back-nav.js';
 import { showSummaryModal, longDateLabel, shareOrDownload } from './summary.js';
+import { setAwake } from './wake-lock.js';
+import { enableSheetDrag } from './sheet-drag.js';
+import { initAutoUpdate } from './update.js';
+import { initRun, renderRun, leaveRun, openRunProgress, dayRunsHtml, fmtKm, fmtDuration } from './run.js';
+import { loadRuns, runsByDate, weekTotals as runWeekTotals, totals as runTotals } from './run-store.js';
+
+// Versão carregada (js/version.js, lido antes dos módulos).
+const APP_VERSION = self.APP_VERSION || '—';
 
 // As chaves "Treino A/B" continuam sendo usadas no armazenamento (histórico,
 // séries, sessões); na tela cada treino aparece pelo grupo muscular.
 const GROUP_LABELS = { upper: 'Superior', lower: 'Inferior' };
 const GROUP_ORDER = ['upper', 'lower'];
 const orderedDays = [...days].sort((a, b) => GROUP_ORDER.indexOf(workoutData[a].group) - GROUP_ORDER.indexOf(workoutData[b].group));
-function dayLabel(day) { return (workoutData[day] && GROUP_LABELS[workoutData[day].group]) || day; }
+// Corrida aparece no calendário e no detalhe do dia como mais um "treino".
+const RUN_DAY = '__corrida__';
+const RUN_COLOR = '#ff9f43';
+function dayLabel(day) {
+  if (day === RUN_DAY) return 'Corrida';
+  return (workoutData[day] && GROUP_LABELS[workoutData[day].group]) || day;
+}
+
+// Academia mostra os exercícios (Superior/Inferior) ou a Corrida, escolhida no
+// terceiro botão. Fica lembrado em gym:view.
+const GYM_VIEW_KEY = 'gym:view';
+let gymView = localStorage.getItem(GYM_VIEW_KEY) === 'run' ? 'run' : 'lift';
 
 const LAST_DAY_KEY = 'gym:lastDay';
 let currentDay = days.includes(localStorage.getItem(LAST_DAY_KEY)) ? localStorage.getItem(LAST_DAY_KEY) : orderedDays[0];
@@ -99,6 +119,12 @@ function isWorkoutFinished(day, date) {
 }
 
 function updateHeaderTitle() {
+  if (gymView === 'run') {
+    headerTitle.innerText = 'Corrida';
+    const week = runWeekTotals(todayString());
+    headerSubtitle.innerText = `${week.count} ${week.count === 1 ? 'corrida' : 'corridas'} nesta semana`;
+    return;
+  }
   headerTitle.innerText = dayLabel(currentDay);
   // Conta os mesmos dias que aparecem marcados no calendário.
   const weekStart = getWeekStart(todayString());
@@ -109,7 +135,7 @@ function updateHeaderTitle() {
 
 function saveCompletedDay(day) {
   const logDate = sessionDateFor(day);
-  const allTime = JSON.parse(localStorage.getItem('completedDaysAllTime') || '[]');
+  const allTime = getAllTimeCompletedDays();
   if (!allTime.find(c => c && c.day === day && c.date === logDate)) {
     allTime.push({ day, date: logDate });
     localStorage.setItem('completedDaysAllTime', JSON.stringify(allTime));
@@ -144,30 +170,10 @@ function getSessionDurationLabel(day) {
   return `${h}h${m > 0 ? ` ${m}min` : ''}`;
 }
 
-// Mantém a tela acesa enquanto um treino da academia está em andamento. O
-// navegador solta o bloqueio sozinho quando o app sai da tela; o timer de 1s
-// pede de novo quando você volta.
+// Mantém a tela acesa enquanto um treino da academia está em andamento (até
+// 3 h, ou até ficar parado sem série). O timer de 1s atualiza o pedido.
 const SCREEN_AWAKE_MAX_MS = 3 * 60 * 60 * 1000;
-let screenWakeLock = null;
-let screenWakeLockPending = false;
-
-function setScreenAwake(on) {
-  if (!('wakeLock' in navigator)) return;
-  if (!on) {
-    if (screenWakeLock) screenWakeLock.release().catch(() => {});
-    screenWakeLock = null;
-    return;
-  }
-  if (screenWakeLock || screenWakeLockPending || document.visibilityState !== 'visible') return;
-  screenWakeLockPending = true;
-  navigator.wakeLock.request('screen')
-    .then(lock => {
-      screenWakeLock = lock;
-      lock.addEventListener('release', () => { if (screenWakeLock === lock) screenWakeLock = null; });
-    })
-    .catch(() => {})
-    .finally(() => { screenWakeLockPending = false; });
-}
+function setScreenAwake(on) { setAwake('gym', on); }
 
 function isGymModeActive() {
   return !document.body.classList.contains('mode-cali') && !document.body.classList.contains('mode-mobi');
@@ -273,9 +279,9 @@ function buildWorkoutSummary(day) {
     const todayUnit = todaySets[todaySets.length - 1].unit || 'kg';
     const historyBeforeToday = history.filter(h => h.date !== logDate && (h.unit || 'kg') === todayUnit);
     if (historyBeforeToday.length === 0) return;
-    const prevBest = historyBeforeToday.reduce((best, h) => estimatedMax(h.weight, h.reps) > estimatedMax(best.weight, best.reps) ? h : best);
-    const bestToday = todaySets.reduce((best, h) => estimatedMax(h.weight, h.reps) > estimatedMax(best.weight, best.reps) ? h : best);
-    if (estimatedMax(bestToday.weight, bestToday.reps) > estimatedMax(prevBest.weight, prevBest.reps)) {
+    const prevBest = historyBeforeToday.reduce((best, h) => isBetterSet(h, best) ? h : best);
+    const bestToday = todaySets.reduce((best, h) => isBetterSet(h, best) ? h : best);
+    if (isBetterSet(bestToday, prevBest)) {
       prsToday.push({ exercise: ex, weight: bestToday.weight, reps: bestToday.reps, unit: todayUnit });
     }
   });
@@ -332,8 +338,7 @@ async function shareSummaryImage(day) {
 }
 
 function loadProgress(day, exercise) {
-  const raw = localStorage.getItem(storageKey(day, exercise));
-  return raw ? JSON.parse(raw) : { weight: '', reps: '', notes: '', unit: getLastUsedUnit(exercise) };
+  return { weight: '', reps: '', notes: '', unit: getLastUsedUnit(exercise), ...readJSON(storageKey(day, exercise), {}) };
 }
 
 function saveProgressData(day, exercise, weight, reps, notes, setIndex, unit) {
@@ -341,33 +346,53 @@ function saveProgressData(day, exercise, weight, reps, notes, setIndex, unit) {
   const history = loadHistory(exercise);
   const logDate = sessionDateFor(day);
   const entry = { date: logDate, day, weight: parseNum(weight), reps: parseNum(reps), setIndex, notes: notes || '', unit: unit || 'kg' };
-  const existingIdx = history.findIndex(h => h.date === logDate && h.setIndex === setIndex);
+  const existingIdx = history.findIndex(h => h.date === logDate && h.setIndex === setIndex && entryInDay(h, day));
   if (existingIdx >= 0) {
     history[existingIdx] = entry;
   } else {
     history.push(entry);
   }
-  localStorage.setItem(historyKey(exercise), JSON.stringify(history));
+  saveHistory(exercise, history);
   trySync();
 }
 
-function loadHistory(exercise) {
-  const history = JSON.parse(localStorage.getItem(historyKey(exercise)) || '[]');
-  // Compatibilidade com registros salvos antes de existir a unidade: assume kg.
-  return history.map(h => ({ unit: 'kg', ...h }));
+// Um valor corrompido (backup restaurado com defeito, por exemplo) vira lista
+// vazia em vez de travar o app inteiro na abertura. Registros antigos sem
+// unidade ou sem anotação: kg e ''.
+function buildHistory(list) {
+  return list
+    .filter(h => h && typeof h === 'object' && typeof h.date === 'string')
+    .map(h => ({ unit: 'kg', notes: '', ...h }));
 }
-function getSetsCompleted(day, exercise) { return JSON.parse(localStorage.getItem(setsKey(day, exercise)) || '[]'); }
+function loadHistory(exercise) { return readListCached(historyKey(exercise), buildHistory); }
+
+// Grava sem os campos com valor padrão (unidade kg, anotação vazia): cerca de
+// um quarto a menos de espaço — em anos de treino, o armazenamento do celular
+// (~5 MB) chegava perto do limite. A leitura completa os campos.
+function saveHistory(exercise, list) {
+  const compact = list.filter(h => h && typeof h === 'object').map(({ unit, notes, ...rest }) => {
+    const out = rest;
+    if (unit && unit !== 'kg') out.unit = unit;
+    if (notes) out.notes = notes;
+    return out;
+  });
+  localStorage.setItem(historyKey(exercise), JSON.stringify(compact));
+}
+function getSetsCompleted(day, exercise) { return readJSON(setsKey(day, exercise), []).filter(Number.isInteger); }
 // Primeira série ainda não feita (se você desmarcou a 2ª com a 3ª feita, é a 2ª),
 // ou -1 quando todas estão concluídas.
+// Com as previstas feitas, é a próxima série extra (até MAX_EXTRA_SETS a mais).
+const MAX_EXTRA_SETS = 5;
 function nextFreeSetIndex(day, exercise) {
   const done = getSetsCompleted(day, exercise);
-  for (let i = 0; i < setsFor(day, exercise); i++) if (!done.includes(i)) return i;
+  const limit = setsFor(day, exercise) + MAX_EXTRA_SETS;
+  for (let i = 0; i < limit; i++) if (!done.includes(i)) return i;
   return -1;
 }
 // Registro do histórico pertence a esse treino? Registros antigos não guardavam o treino.
 function entryInDay(h, day) { return !h.day || h.day === day; }
 function bestSetOf(sets) {
-  return sets.reduce((best, h) => estimatedMax(h.weight, h.reps) > estimatedMax(best.weight, best.reps) ? h : best);
+  return sets.reduce((best, h) => isBetterSet(h, best) ? h : best);
 }
 
 function describeLoadDelta(cur, prev, unit) {
@@ -399,7 +424,7 @@ function getDayProgress(exercise, dateStr) {
     unit,
     best,
     isFirst: false,
-    isPR: estimatedMax(best.weight, best.reps) > estimatedMax(prevRecord.weight, prevRecord.reps),
+    isPR: isBetterSet(best, prevRecord),
     prevRecord,
     prevDate,
     delta: describeLoadDelta(best, bestSetOf(prior.filter(h => h.date === prevDate)), unit)
@@ -411,7 +436,7 @@ function dayTrendHtml(progress) {
   if (progress.isFirst) return '<span class="day-trend">1º registro</span>';
   if (progress.isPR) return '<span class="day-trend pr">🏆 PR</span>';
   const arrow = { up: '↑', down: '↓', same: '=' }[progress.delta.dir];
-  return `<span class="day-trend ${progress.delta.dir}">${arrow} ${progress.delta.text} <span class="day-trend-vs">vs ${formatDateShortBR(progress.prevDate)}</span></span>`;
+  return `<span class="day-trend ${progress.delta.dir}">${arrow} ${progress.delta.text.replace(/^[+-]/, '')} <span class="day-trend-vs">vs ${formatDateShortBR(progress.prevDate)}</span></span>`;
 }
 
 // Soma o volume (peso x reps) das séries em kg feitas naquele dia.
@@ -436,17 +461,20 @@ function getPersonalRecord(exercise, unit) {
   const targetUnit = unit || getLastUsedUnit(exercise);
   const history = loadHistory(exercise).filter(h => (h.unit || 'kg') === targetUnit);
   if (history.length === 0) return null;
-  return history.reduce((best, h) => estimatedMax(h.weight, h.reps) > estimatedMax(best.weight, best.reps) ? h : best);
+  return history.reduce((best, h) => isBetterSet(h, best) ? h : best);
 }
 
-// Só avisa recorde (fato), sem mensagens de "coaching".
-function maybeShowSetFeedback(exercise, historyBefore, weight, reps, unit) {
-  if (!weight || !reps) return;
+// Só avisa recorde (fato), sem mensagens de "coaching". Precisa de treino em
+// outro dia para comparar: no primeiro treino do exercício, cada série mais
+// pesada que a anterior aparecia como "Novo recorde pessoal".
+function maybeShowSetFeedback(exercise, historyBefore, weight, reps, unit, sessionDate) {
+  if (!reps) return;
   const sameUnitHistory = historyBefore.filter(h => (h.unit || 'kg') === unit);
+  if (!sameUnitHistory.some(h => h.date < sessionDate)) return;
   const prevBest = sameUnitHistory.length > 0
-    ? sameUnitHistory.reduce((best, h) => estimatedMax(h.weight, h.reps) > estimatedMax(best.weight, best.reps) ? h : best)
+    ? sameUnitHistory.reduce((best, h) => isBetterSet(h, best) ? h : best)
     : null;
-  const isNewPR = prevBest && estimatedMax(weight, reps) > estimatedMax(prevBest.weight, prevBest.reps);
+  const isNewPR = prevBest && isBetterSet({ weight, reps }, prevBest);
   if (isNewPR) {
     showToast('🏆 Novo recorde pessoal!', `${formatLoad(weight, unit)} × ${reps} supera seu melhor anterior (${formatLoad(prevBest.weight, unit)} × ${prevBest.reps}).`);
   }
@@ -457,8 +485,8 @@ function toggleSet(day, exercise, index) {
   const existing = sets.indexOf(index);
   if (existing >= 0) {
     sets.splice(existing, 1);
-    const history = loadHistory(exercise).filter(h => !(h.date === sessionDateFor(day) && h.setIndex === index));
-    localStorage.setItem(historyKey(exercise), JSON.stringify(history));
+    const date = sessionDateFor(day);
+    saveHistory(exercise, loadHistory(exercise).filter(h => !(h.date === date && h.setIndex === index && entryInDay(h, day))));
   } else {
     sets.push(index);
   }
@@ -477,7 +505,8 @@ function updateSessionBar(day) {
 }
 
 function loadBodyMetrics() {
-    return JSON.parse(localStorage.getItem('bodyMetrics') || '[]');
+    // Em ordem de data: "último valor" e os gráficos dependem disso.
+    return readJSON('bodyMetrics', []).filter(m => m && typeof m.date === 'string').sort((a, b) => a.date.localeCompare(b.date));
 }
 
 function saveBodyMetrics(dataObj) {
@@ -518,13 +547,20 @@ function buildMetricChartSVG(metrics, field) {
         return { x, y, val: m[field], date: m.date };
     });
 
+    // Marcas em valores redondos (antes 79.5, 80.5, 81.6...).
     let gridHtml = '';
-    const gridCount = 3;
-    for (let g = 0; g <= gridCount; g++) {
-        const w = min + (max - min) * (g / gridCount);
+    niceTicks(min, max, { target: 3 }).forEach(w => {
         const y = PAD_TOP + innerH - ((w - min) / (max - min)) * innerH;
         gridHtml += `<line x1="${PAD_LEFT}" y1="${y.toFixed(1)}" x2="${W - PAD_RIGHT}" y2="${y.toFixed(1)}" stroke="rgba(255,255,255,0.05)" stroke-width="1" />`;
-        gridHtml += `<text x="${(PAD_LEFT - 8).toFixed(1)}" y="${(y + 3).toFixed(1)}" text-anchor="end" font-family="var(--font-mono)" font-size="9" fill="var(--text-faint)">${w.toFixed(1)}</text>`;
+        gridHtml += `<text x="${(PAD_LEFT - 8).toFixed(1)}" y="${(y + 3).toFixed(1)}" text-anchor="end" font-family="var(--font-mono)" font-size="9" fill="var(--text-faint)">${w}</text>`;
+    });
+    // Com muitos registros os números se atropelavam: mostra todos só até 6
+    // pontos; depois, o primeiro, o último, o menor e o maior.
+    const labeled = new Set(points.map((_, i) => i));
+    if (points.length > 6) {
+        labeled.clear();
+        const vals = points.map(p => p.val);
+        [0, points.length - 1, vals.indexOf(Math.min(...vals)), vals.indexOf(Math.max(...vals))].forEach(i => labeled.add(i));
     }
 
     function smoothPath(pts) {
@@ -553,8 +589,8 @@ function buildMetricChartSVG(metrics, field) {
     let dotsHtml = '';
     let labelsHtml = '';
     points.forEach((p, idx) => {
-        dotsHtml += `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="4" fill="var(--bg)" stroke="var(--accent)" stroke-width="2" />`;
-        dotsHtml += `<text x="${p.x.toFixed(1)}" y="${(p.y - 12).toFixed(1)}" text-anchor="middle" font-family="var(--font-mono)" font-weight="700" font-size="10" fill="var(--accent)">${p.val}</text>`;
+        dotsHtml += `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${points.length > 12 ? 3 : 4}" fill="var(--bg)" stroke="var(--accent)" stroke-width="2" />`;
+        if (labeled.has(idx)) dotsHtml += `<text x="${p.x.toFixed(1)}" y="${(p.y - 12).toFixed(1)}" text-anchor="${idx === 0 ? 'start' : idx === points.length - 1 ? 'end' : 'middle'}" font-family="var(--font-mono)" font-weight="700" font-size="10" fill="var(--accent)">${p.val}</text>`;
         if (idx === 0 || idx === points.length - 1) {
             const [, m, d] = p.date.split('-');
             labelsHtml += `<text x="${p.x.toFixed(1)}" y="${H - 5}" text-anchor="middle" font-family="var(--font-mono)" font-size="9" fill="var(--text-faint)">${d}/${m}</text>`;
@@ -577,6 +613,35 @@ function buildMetricChartSVG(metrics, field) {
             ${labelsHtml}
         </svg>
     </div>`;
+}
+
+// Lista das medidas salvas, da mais recente para a mais antiga, com botão para
+// apagar — um valor digitado errado (ex.: 800 em vez de 80.0) estragava o
+// gráfico para sempre.
+const BODY_RECORDS_VISIBLE = 6;
+function bodyRecordsHtml(metrics) {
+    const fields = Object.keys(bodyMetricsMap);
+    const records = metrics.filter(m => m && m.date && fields.some(f => m[f])).slice().reverse();
+    if (records.length === 0) return '';
+    const rows = records.map((m, i) => {
+        const chips = fields.filter(f => m[f]).map(f => `<span class="body-record-chip">${bodyMetricsMap[f].label} <b>${m[f]}${bodyMetricsMap[f].unit}</b></span>`).join('');
+        return `<div class="body-record ${i >= BODY_RECORDS_VISIBLE ? 'hidden' : ''}">
+            <div class="body-record-main">
+                <span class="body-record-date">${formatDateBR(m.date)}</span>
+                <div class="body-record-chips">${chips}</div>
+            </div>
+            <button type="button" class="body-record-del" data-record-date="${m.date}" aria-label="Apagar registro de ${formatDateBR(m.date)}">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg>
+            </button>
+        </div>`;
+    }).join('');
+    const hidden = records.length - BODY_RECORDS_VISIBLE;
+    return `
+        <div class="body-card" id="bodyRecords">
+            <div class="body-card-title">Registros</div>
+            ${rows}
+            ${hidden > 0 ? `<button type="button" class="evo-show-more-btn" id="bodyRecordsMore">Ver ${hidden} registro${hidden > 1 ? 's' : ''} mais antigo${hidden > 1 ? 's' : ''}</button>` : ''}
+        </div>`;
 }
 
 function renderBodyModal() {
@@ -698,7 +763,34 @@ function renderBodyModal() {
         </div>
 
         <button class="save-btn" id="saveBodyBtn" style="width: 100%; margin-top: 16px; margin-bottom: 20px;">Salvar Medidas</button>
+        ${bodyRecordsHtml(metrics)}
     `;
+
+    const recordsList = document.getElementById('bodyRecords');
+    if (recordsList) {
+        recordsList.addEventListener('click', async (e) => {
+            const more = e.target.closest('#bodyRecordsMore');
+            if (more) {
+                recordsList.querySelectorAll('.body-record.hidden').forEach(el => el.classList.remove('hidden'));
+                more.remove();
+                return;
+            }
+            const del = e.target.closest('[data-record-date]');
+            if (!del) return;
+            const date = del.dataset.recordDate;
+            const ok = await confirmDialog({
+                title: 'Apagar este registro?',
+                text: `As medidas salvas em ${formatDateBR(date)} saem do histórico e dos gráficos.`,
+                confirmLabel: 'Apagar registro',
+                danger: true
+            });
+            if (!ok) return;
+            localStorage.setItem('bodyMetrics', JSON.stringify(loadBodyMetrics().filter(m => m.date !== date)));
+            trySync();
+            renderBodyModal();
+            showToast('Registro apagado', `Medidas de ${formatDateBR(date)} removidas.`);
+        });
+    }
 
     document.getElementById('bodyChartTabs').querySelectorAll('.sheet-tab').forEach(btn => {
         btn.addEventListener('click', (e) => {
@@ -922,7 +1014,25 @@ function bindPlanEditor() {
   });
 }
 
+// Marcas de "série feita" (series:) e de "pulado" (pulados:) só valem para a
+// sessão em andamento; o histórico guarda todas as séries. As de dias antigos
+// eram peso morto no armazenamento e no backup (~13% do espaço em 3 anos).
+const STALE_SESSION_DAYS = 7;
+function pruneStaleSessionKeys() {
+  const d = new Date();
+  d.setDate(d.getDate() - STALE_SESSION_DAYS);
+  const cutoff = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+  const stale = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    const m = /^(?:series|pulados):.+:(\d{4}-\d{2}-\d{2})$/.exec(key);
+    if (m && m[1] < cutoff) stale.push(key);
+  }
+  stale.forEach(key => localStorage.removeItem(key));
+}
+
 function init() {
+  pruneStaleSessionKeys();
   updateHeaderTitle();
   renderDaySelectors();
   renderExercises(currentDay);
@@ -941,6 +1051,45 @@ function init() {
   bindDateFixTool();
   bindPlanEditor();
   initBackNav();
+  initVersionInfo();
+  requestPersistentStorage();
+  bindStorageFullWarning();
+  initAutoUpdate();
+  initRun({ onChange: onRunsChanged });
+  if (gymView === 'run') applyGymView();
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refreshIfNewDay(); });
+  // Abriu: desliga a tela de resgate (js/rescue.js).
+  if (window.treinoReady) window.treinoReady();
+}
+
+// Versão em Configurações > App. Na primeira vez que uma versão nova abre,
+// um aviso curto confirma que a atualização chegou.
+const VERSION_SEEN_KEY = 'app:version';
+function initVersionInfo() {
+  document.getElementById('appVersion').textContent = APP_VERSION;
+  const seen = localStorage.getItem(VERSION_SEEN_KEY);
+  if (seen === APP_VERSION) return;
+  localStorage.setItem(VERSION_SEEN_KEY, APP_VERSION);
+  // Instalação nova não tem o que avisar; quem já usava (tem backup) vê o aviso.
+  if (seen || localStorage.getItem('lastSyncAt')) setTimeout(() => showToast(`Atualizado para a versão ${APP_VERSION}`, 'O app já está com as novidades.'), 800);
+}
+
+// Espaço do app no navegador esgotado (~5 MB): a gravação falha e a série não
+// aparecia, sem explicação. Agora avisa.
+function bindStorageFullWarning() {
+  const isQuotaError = e => !!e && (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED' || e.code === 22);
+  const warn = () => showToast('Não deu para salvar', 'O espaço do app neste celular acabou. Salve um backup em arquivo nas Configurações.');
+  window.addEventListener('error', (e) => { if (isQuotaError(e.error)) warn(); });
+  window.addEventListener('unhandledrejection', (e) => { if (isQuotaError(e.reason)) warn(); });
+}
+
+// Pede ao navegador para não apagar os dados do app quando o celular estiver
+// com pouco espaço (sem isso, o armazenamento é "temporário" para ele).
+function requestPersistentStorage() {
+  if (!navigator.storage || !navigator.storage.persist) return;
+  navigator.storage.persisted()
+    .then(already => (already ? true : navigator.storage.persist()))
+    .catch(() => {});
 }
 
 window.toggleAccordion = function (id, day) {
@@ -951,6 +1100,8 @@ window.toggleAccordion = function (id, day) {
     const header = c.querySelector('.exercise-header');
     if (header) header.setAttribute('aria-expanded', String(isOpen));
   });
+  const opened = expandedExerciseId && exerciseListContainer.querySelector(`[data-card-id="${expandedExerciseId}"]`);
+  if (opened) revealCard(opened);
 };
 
 
@@ -977,11 +1128,11 @@ function renderDaySelectors() {
   orderedDays.forEach(day => {
     const btn = document.createElement('button');
     const isCompleted = completedDays.includes(day);
-    btn.className = `tab-btn ${day === currentDay ? 'active' : ''} ${isCompleted ? 'completed' : ''}`;
+    btn.className = `tab-btn ${day === currentDay && gymView === 'lift' ? 'active' : ''} ${isCompleted ? 'completed' : ''}`;
     btn.innerText = dayLabel(day);
     btn.onclick = async () => {
-      if (day === currentDay) return;
-      if (hasUnsavedInput() && !(await confirmDialog({
+      if (day === currentDay && gymView === 'lift') return;
+      if (gymView === 'lift' && hasUnsavedInput() && !(await confirmDialog({
         title: `Trocar para ${dayLabel(day)}?`,
         text: 'A carga/reps que você digitou ainda não foi registrada e vai se perder.',
         confirmLabel: 'Trocar mesmo assim'
@@ -991,8 +1142,7 @@ function renderDaySelectors() {
       currentDay = day;
       localStorage.setItem(LAST_DAY_KEY, day);
       expandedExerciseId = null;
-      updateHeaderTitle();
-      renderDaySelectors();
+      setGymView('lift');
       renderExercises(currentDay);
       updateSessionBar(currentDay);
       updateFinishButtonState();
@@ -1000,7 +1150,48 @@ function renderDaySelectors() {
     };
     daySelectorsContainer.appendChild(btn);
   });
+  // Corrida: verde quando teve corrida nesta semana, como os treinos finalizados.
+  const runBtn = document.createElement('button');
+  runBtn.className = `tab-btn ${gymView === 'run' ? 'active' : ''} ${runWeekTotals(todayString()).count > 0 ? 'completed' : ''}`;
+  runBtn.innerText = 'Corrida';
+  runBtn.onclick = async () => {
+    if (gymView === 'run') return;
+    if (hasUnsavedInput() && !(await confirmDialog({
+      title: 'Trocar para Corrida?',
+      text: 'A carga/reps que você digitou ainda não foi registrada e vai se perder.',
+      confirmLabel: 'Trocar mesmo assim'
+    }))) return;
+    expandedExerciseId = null;
+    setGymView('run');
+  };
+  daySelectorsContainer.appendChild(runBtn);
   updateFinishButtonState();
+}
+
+// Troca entre os exercícios e a Corrida dentro da Academia.
+function setGymView(view) {
+  if (gymView === 'run' && view !== 'run') leaveRun();
+  gymView = view;
+  localStorage.setItem(GYM_VIEW_KEY, view);
+  applyGymView();
+  window.scrollTo(0, 0);
+}
+
+function applyGymView() {
+  const run = gymView === 'run';
+  ['sessionBar', 'exerciseList', 'gymFinishWrap'].forEach(id => { document.getElementById(id).hidden = run; });
+  document.getElementById('runRoot').hidden = !run;
+  document.getElementById('menuBtn').setAttribute('aria-label', run ? 'Progresso da corrida' : 'Menu e Estatísticas');
+  if (run) renderRun();
+  updateHeaderTitle();
+  renderDaySelectors();
+}
+
+// Corrida registrada, corrigida ou apagada.
+function onRunsChanged() {
+  updateHeaderTitle();
+  renderDaySelectors();
+  if (calendarModal.classList.contains('visible')) renderCalendarModal();
 }
 
 function bindFinishDay() {
@@ -1058,7 +1249,7 @@ function setDotContent(entry, totalSets) {
 // "Pular hoje": exercício fica fora da conta de séries do dia (máquina ocupada,
 // dor, falta de tempo). Vale só para a data da sessão atual.
 function skippedKey(day) { return `pulados:${safeId(day)}:${sessionDateFor(day)}`; }
-function getSkipped(day) { return JSON.parse(localStorage.getItem(skippedKey(day)) || '[]'); }
+function getSkipped(day) { return readJSON(skippedKey(day), []); }
 function isSkipped(day, exercise) { return getSkipped(day).includes(exercise); }
 
 function setSkipped(day, exercise, skipped) {
@@ -1070,6 +1261,9 @@ function setSkipped(day, exercise, skipped) {
   updateExerciseCard(day, exercise);
   updateSessionBar(day);
 }
+
+const REGISTER_DEBOUNCE_MS = 700;
+const lastRegisterAt = new Map();
 
 function buildExerciseCardHTML(day, exercise) {
   const savedData = loadProgress(day, exercise);
@@ -1084,12 +1278,18 @@ function buildExerciseCardHTML(day, exercise) {
   const pr = getPersonalRecord(exercise, currentUnit);
   const entries = todaySetEntries(day, exercise);
   let dotsHtml = '';
-  for (let i = 0; i < totalSets; i++) {
+  // Séries extras (feitas depois das previstas) aparecem como bolinhas a mais.
+  const dotCount = Math.max(totalSets, ...setsCompleted.map(i => i + 1));
+  for (let i = 0; i < dotCount; i++) {
     const filled = setsCompleted.includes(i);
     dotsHtml += filled
-      ? `<button type="button" class="set-dot filled" data-set-index="${i}" aria-label="Editar série ${i + 1}">${setDotContent(entries.get(i), totalSets)}</button>`
-      : `<div class="set-dot" data-set-index="${i}">${i + 1}</div>`;
+      ? `<button type="button" class="set-dot filled" data-set-index="${i}" aria-label="Editar série ${i + 1}">${setDotContent(entries.get(i), dotCount)}</button>`
+      : `<button type="button" class="set-dot" data-set-index="${i}" aria-label="Registrar série ${i + 1}">${i + 1}</button>`;
   }
+  // Previstas feitas: o botão vira "Série extra" (antes travava em "Séries concluídas").
+  const canRegister = nextFreeSetIndex(day, exercise) >= 0;
+  // Ícone de evolução só com histórico (sem registro, o gráfico abria outro exercício).
+  const hasHistory = loadHistory(exercise).length > 0;
   const notesDisplay = savedData.notes ? 'none' : 'flex';
   const notesVisibleClass = savedData.notes ? 'visible' : '';
   const notesValue = String(savedData.notes || '').replace(/"/g, '&quot;');
@@ -1112,7 +1312,7 @@ function buildExerciseCardHTML(day, exercise) {
               <div class="input-group"><label>Reps</label><input type="number" inputmode="numeric" enterkeyhint="done" id="reps-${id}" value="${savedData.reps}" placeholder="10"></div>
             </div>
             <div class="card-actions">
-              <button class="save-btn" id="save-${id}" ${isDone ? 'disabled' : ''}>${isDone ? 'Séries concluídas' : 'Registrar série'}</button>
+              <button class="save-btn ${isDone ? 'extra-set-btn' : ''}" id="save-${id}" ${canRegister ? '' : 'disabled'}>${!isDone ? 'Registrar série' : canRegister ? 'Série extra' : 'Séries concluídas'}</button>
               <button class="rest-btn-trigger" id="rest-${id}" aria-label="Iniciar descanso"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg></button>
             </div>
             <div class="card-links">
@@ -1133,9 +1333,9 @@ function buildExerciseCardHTML(day, exercise) {
           <div class="exercise-title-row">
             <span class="exercise-title">${exercise}</span>
             <div class="exercise-title-actions">
-              <button class="info-icon" aria-label="Ver evolução" onclick="event.stopPropagation(); openEvolutionFor('${exArg}')">
+              ${hasHistory ? `<button class="info-icon" aria-label="Ver evolução" onclick="event.stopPropagation(); openEvolutionFor('${exArg}')">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline><polyline points="17 6 23 6 23 12"></polyline></svg>
-              </button>
+              </button>` : ''}
               <button class="info-icon" aria-label="Ver guia do exercício" onclick="event.stopPropagation(); showExerciseGuide('${exArg}')">?</button>
             </div>
           </div>
@@ -1172,7 +1372,7 @@ function updateLoggedSet(day, exercise, setIndex, weight, reps, unit) {
   const idx = history.findIndex(h => h.date === date && h.setIndex === setIndex && entryInDay(h, day));
   if (idx >= 0) history[idx] = { ...history[idx], weight, reps };
   else history.push({ date, day, weight, reps, setIndex, notes: '', unit });
-  localStorage.setItem(historyKey(exercise), JSON.stringify(history));
+  saveHistory(exercise, history);
   const lastIndex = Math.max(...getSetsCompleted(day, exercise));
   if (setIndex === lastIndex) {
     const saved = loadProgress(day, exercise);
@@ -1195,7 +1395,10 @@ function openLoggedSetEditor(day, exercise, setIndex) {
     onSave: ({ weight, reps }) => {
       const w = parseNum(weight);
       const r = Math.round(parseNum(reps));
-      if (!(w > 0) || !(r > 0)) return false;
+      // Carga 0 vale (peso do corpo), igual ao registrar — antes a série com
+      // 0 kg não podia ser corrigida.
+      if (String(weight).trim() === '' || w < 0) return 'weight';
+      if (!(r > 0)) return 'reps';
       updateLoggedSet(day, exercise, setIndex, w, r, unit);
     },
     onDelete: () => toggleSet(day, exercise, setIndex)
@@ -1218,7 +1421,10 @@ function bindExerciseCardEvents(day, exercise) {
   // Tocar num campo seleciona o valor, para digitar por cima sem apagar antes.
   const weightInput = card.querySelector(`#weight-${id}`);
   const repsInput = card.querySelector(`#reps-${id}`);
-  [weightInput, repsInput].forEach(input => input.addEventListener('focus', () => setTimeout(() => input.select(), 0)));
+  [weightInput, repsInput].forEach(input => {
+    input.addEventListener('focus', () => setTimeout(() => input.select(), 0));
+    input.addEventListener('input', () => input.classList.remove('input-missing'));
+  });
   weightInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); repsInput.focus(); } });
   repsInput.addEventListener('keydown', (e) => {
     if (e.key !== 'Enter') return;
@@ -1238,6 +1444,19 @@ function bindExerciseCardEvents(day, exercise) {
     toggleNotesBtn.addEventListener('click', () => {
       notesContainer.classList.add('visible');
       toggleNotesBtn.style.display = 'none';
+      card.querySelector(`#notes-${id}`).focus();
+    });
+  }
+  // Ajuste de máquina fica salvo ao sair do campo (antes só era gravado junto
+  // com uma série; digitar e fechar o card perdia a anotação).
+  const notesInput = card.querySelector(`#notes-${id}`);
+  if (notesInput) {
+    notesInput.addEventListener('change', () => {
+      const saved = loadProgress(day, exercise);
+      const notes = notesInput.value.trim();
+      if (notes === (saved.notes || '')) return;
+      localStorage.setItem(storageKey(day, exercise), JSON.stringify({ ...saved, notes }));
+      trySync();
     });
   }
   const skipBtn = card.querySelector(`#skip-${id}`);
@@ -1267,7 +1486,20 @@ function bindExerciseCardEvents(day, exercise) {
   document.getElementById(`save-${id}`).addEventListener('click', () => {
     const w = document.getElementById(`weight-${id}`).value;
     const r = document.getElementById(`reps-${id}`).value;
-    if (!w || !r) return;
+    // Campo vazio: antes o toque não fazia nada. Agora mostra qual falta.
+    const weightOk = String(w).trim() !== '' && parseNum(w) >= 0;
+    if (!weightOk || !(parseNum(r) > 0)) {
+      const missing = !weightOk ? weightInput : repsInput;
+      missing.classList.remove('input-missing');
+      void missing.offsetWidth;
+      missing.classList.add('input-missing');
+      missing.focus();
+      showToast('Falta preencher', missing === weightInput ? 'Digite a carga da série.' : 'Digite quantas repetições fez.');
+      return;
+    }
+    // Toque duplo sem querer registrava duas séries de uma vez.
+    if (Date.now() - (lastRegisterAt.get(exercise) || 0) < REGISTER_DEBOUNCE_MS) return;
+    lastRegisterAt.set(exercise, Date.now());
     const activeUnitBtn = card.querySelector(`#unitToggle-${id} .unit-toggle-btn.active`);
     const unit = activeUnitBtn ? activeUnitBtn.dataset.unit : 'kg';
     // Com todas as séries feitas não há o que registrar (antes isso gravava uma
@@ -1276,9 +1508,10 @@ function bindExerciseCardEvents(day, exercise) {
     if (thisSetIndex < 0) return;
     markSessionStarted(day);
     const notesVal = document.getElementById(`notes-${id}`).value;
-    const historyBefore = loadHistory(exercise).filter(h => !(h.date === sessionDateFor(day) && h.setIndex === thisSetIndex));
+    const sessionDate = sessionDateFor(day);
+    const historyBefore = loadHistory(exercise).filter(h => !(h.date === sessionDate && h.setIndex === thisSetIndex && entryInDay(h, day)));
     saveProgressData(day, exercise, w, r, notesVal, thisSetIndex, unit);
-    maybeShowSetFeedback(exercise, historyBefore, parseNum(w), parseNum(r), unit);
+    maybeShowSetFeedback(exercise, historyBefore, parseNum(w), parseNum(r), unit, sessionDate);
     expandedExerciseId = id;
     toggleSet(day, exercise, thisSetIndex);
     // Resposta ao registrar: a bolinha "enche" e o celular vibra de leve.
@@ -1301,7 +1534,23 @@ function updateExerciseCard(day, exercise) {
   bindExerciseCardEvents(day, exercise);
 }
 
+// Data em que a lista foi desenhada. App que ficou em segundo plano de um dia
+// para o outro voltava mostrando as séries, o cronômetro e a contagem da véspera.
+let renderedDate = todayString();
+
+function refreshIfNewDay() {
+  if (todayString() === renderedDate) return;
+  if (gymView === 'run') renderRun();
+  expandedExerciseId = null;
+  updateHeaderTitle();
+  renderDaySelectors();
+  renderExercises(currentDay);
+  updateSessionBar(currentDay);
+  updateLiveTimer();
+}
+
 function renderExercises(day) {
+  renderedDate = todayString();
   ensureFreshSessionAnchor(day);
   exerciseListContainer.innerHTML = '';
   const exercises = workoutData[day].exercises;
@@ -1315,6 +1564,7 @@ function renderExercises(day) {
 
 function bindStatsSheet() {
   document.getElementById('menuBtn').addEventListener('click', () => {
+    if (gymView === 'run') { openRunProgress(); return; }
     renderCategorizedStats();
     renderEvolutionTab();
     volumeWeekOffset = 0;
@@ -1331,9 +1581,11 @@ function bindStatsSheet() {
     wrap.querySelectorAll('.open').forEach(el => el.classList.remove('open'));
   });
   sheetBackdrop.addEventListener('click', () => { statsSheet.classList.remove('visible'); sheetBackdrop.classList.remove('visible'); });
-  document.querySelectorAll('.sheet-tab').forEach(tab => {
+  enableSheetDrag(statsSheet, () => { statsSheet.classList.remove('visible'); sheetBackdrop.classList.remove('visible'); });
+  // Só as abas das Estatísticas (as abas de Medidas usam a mesma classe).
+  statsSheet.querySelectorAll('.sheet-tab').forEach(tab => {
     tab.addEventListener('click', () => {
-      document.querySelectorAll('.sheet-tab').forEach(t => t.classList.remove('active'));
+      statsSheet.querySelectorAll('.sheet-tab').forEach(t => t.classList.remove('active'));
       tab.classList.add('active');
       const target = tab.dataset.tab;
       
@@ -1348,7 +1600,7 @@ window.openEvolutionFor = function (exercise) {
   evoSelectedExercise = exercise;
   evoRangeMonths = 3;
   evoSelectedUnit = null;
-  document.querySelectorAll('.sheet-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === 'evolucao'));
+  statsSheet.querySelectorAll('.sheet-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === 'evolucao'));
   if (statsBody) statsBody.style.display = 'none';
   if (volumeBody) volumeBody.style.display = 'none';
   if (evolutionBody) evolutionBody.style.display = 'block';
@@ -1361,9 +1613,9 @@ window.openEvolutionFor = function (exercise) {
   }
 };
 
-function getAllTimeCompletedDays() {
-  return JSON.parse(localStorage.getItem('completedDaysAllTime') || '[]');
-}
+const buildCompletedDays = list => list.filter(c => c && typeof c.date === 'string' && typeof c.day === 'string');
+// Lido a cada segundo pelo cronômetro: com cache.
+function getAllTimeCompletedDays() { return readListCached('completedDaysAllTime', buildCompletedDays); }
 
 // Data -> treinos daquele dia. Inclui dias finalizados e também dias em que
 // só houve séries registradas (sem apertar "Finalizar"), pra nada sumir do calendário.
@@ -1374,15 +1626,19 @@ function getLoggedWorkoutsByDate() {
     map.get(date).add(day);
   };
   getAllTimeCompletedDays().forEach(c => { if (c && c.date && c.day) add(c.date, c.day); });
+  runsByDate().forEach((_, date) => add(date, RUN_DAY));
   days.forEach(day => exercisesEverIn(day).forEach(ex => loadHistory(ex).forEach(h => { if (entryInDay(h, day)) add(h.date, day); })));
   return map;
 }
+
+// Ordem no calendário e no detalhe do dia: Superior, Inferior, Corrida.
+function dayOrder(day) { return day === RUN_DAY ? orderedDays.length : orderedDays.indexOf(day); }
 
 function getWorkoutsForDate(dateStr) {
   const set = getLoggedWorkoutsByDate().get(dateStr);
   if (!set) return [];
   return [...set]
-    .sort((a, b) => orderedDays.indexOf(a) - orderedDays.indexOf(b))
+    .sort((a, b) => dayOrder(a) - dayOrder(b))
     .map(day => ({ day, date: dateStr }));
 }
 
@@ -1427,31 +1683,41 @@ function dayMusclesHtml(exercises) {
 function openDayDetail(dateStr) {
   const workouts = getWorkoutsForDate(dateStr);
   if (workouts.length === 0) return;
-  dayDetailTitle.innerText = formatDateBR(dateStr);
+  dayDetailTitle.innerText = longDateLabel(dateStr);
   let html = '';
   const dayPRs = [];
   const trained = [];
   workouts.forEach(w => {
+    if (w.day === RUN_DAY) {
+      const day = runTotals(loadRuns(), r => r.d === dateStr);
+      html += `<div class="day-detail-meta">
+        <span class="day-detail-chip workout-tag" style="--day-color: ${RUN_COLOR}">Corrida</span>
+        <span class="day-detail-chip">${fmtKm(day.km)} km</span>
+        <span class="day-detail-chip">${fmtDuration(day.run + day.walk)}</span>
+      </div>${dayRunsHtml(dateStr)}`;
+      return;
+    }
     const timeLabel = getSessionTimeLabel(w.day, dateStr);
     const exercises = getExercisesLoggedForDay(w.day, dateStr);
     trained.push(...exercises.map(item => item.exercise));
     const volumeKg = getDayVolumeKg(exercises);
+    const setCount = exercises.reduce((sum, item) => sum + item.sets.length, 0);
     html += `<div class="day-detail-meta">
-      <span class="day-detail-chip workout-tag ${getDayColorClass(w.day)}">${dayLabel(w.day)}</span>
-      ${timeLabel ? `<span class="day-detail-chip">⏱ ${timeLabel}</span>` : ''}
-      <span class="day-detail-chip">${exercises.length} exercício${exercises.length !== 1 ? 's' : ''}</span>
-      ${volumeKg > 0 ? `<span class="day-detail-chip">📦 ${volumeKg.toLocaleString('pt-BR')}kg volume</span>` : ''}
+      <span class="day-detail-chip workout-tag" style="--day-color: ${getDayColor(w.day)}">${dayLabel(w.day)}</span>
+      <span class="day-detail-chip">${setCount} ${setCount === 1 ? 'série' : 'séries'}</span>
+      ${volumeKg > 0 ? `<span class="day-detail-chip">${Math.round(volumeKg).toLocaleString('pt-BR')} kg</span>` : ''}
+      ${timeLabel ? `<span class="day-detail-chip">${timeLabel}</span>` : ''}
     </div>`;
     exercises.forEach(item => {
       let setsHtml = '';
       let bestIdx = 0;
       item.sets.forEach((s, i) => {
-        if (estimatedMax(s.weight, s.reps) > estimatedMax(item.sets[bestIdx].weight, item.sets[bestIdx].reps)) bestIdx = i;
+        if (isBetterSet(s, item.sets[bestIdx])) bestIdx = i;
       });
       const progress = getDayProgress(item.exercise, dateStr);
       if (progress && progress.isPR) dayPRs.push({ exercise: item.exercise, ...progress });
       item.sets.forEach((s, i) => { setsHtml += `<span class="evo-set-chip ${i === bestIdx ? 'best' : ''}">${formatLoad(s.weight, s.unit || 'kg')} <span class="evo-set-chip-x">×</span> ${s.reps}</span>`; });
-      html += `<div class="day-detail-ex">
+      html += `<div class="day-detail-ex" style="--day-color: ${getDayColor(w.day)}">
         <div class="day-detail-ex-head">
           <div class="day-detail-ex-name">${item.exercise}</div>
           ${dayTrendHtml(progress)}
@@ -1493,9 +1759,9 @@ function openDayDetail(dateStr) {
 // finalizado por engano): histórico, séries, horários, "finalizado" e pulados.
 function deleteWorkoutDay(day, date) {
   exercisesEverIn(day).forEach(ex => {
-    const history = JSON.parse(localStorage.getItem(historyKey(ex)) || '[]');
-    const kept = history.filter(h => !(h.date === date && entryInDay(h, day)));
-    if (kept.length !== history.length) localStorage.setItem(historyKey(ex), JSON.stringify(kept));
+    const history = readJSON(historyKey(ex), []);
+    const kept = history.filter(h => !(h && h.date === date && entryInDay(h, day)));
+    if (kept.length !== history.length) saveHistory(ex, kept);
     localStorage.removeItem(`series:${safeId(day)}:${safeId(ex)}:${date}`);
   });
   localStorage.removeItem(`sessaoInicio:${safeId(day)}:${date}`);
@@ -1520,111 +1786,65 @@ function deleteWorkoutDay(day, date) {
 
 function bindDayDetailModal() {
   document.getElementById('closeDayDetail').addEventListener('click', () => { dayDetailModal.classList.remove('visible'); });
+  enableSheetDrag(dayDetailModal.querySelector('.day-detail-content'), () => dayDetailModal.classList.remove('visible'));
   dayDetailModal.addEventListener('click', (e) => { if (e.target.id === 'dayDetailModal') dayDetailModal.classList.remove('visible'); });
 }
 
-const CAL_MONTH_NAMES = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
-const CAL_DAY_LABELS = ['D', 'S', 'T', 'Q', 'Q', 'S', 'S'];
-const CAL_DAY_COLOR_CLASSES = ['cal-color-1', 'cal-color-2', 'cal-color-3', 'cal-color-4', 'cal-color-5'];
-// Mesmas cores das classes cal-color-* (css/panel-modals.css), para dividir o dia com mais de um treino.
+// Cor de cada treino no calendário, no detalhe do dia e na legenda.
 const CAL_DAY_COLORS = ['#8b5cf6', '#3b82f6', '#ec4899', '#f97316', '#14b8a6'];
 function getDayColor(dayName) {
+  if (dayName === RUN_DAY) return RUN_COLOR;
   const idx = Math.max(0, days.indexOf(dayName));
   return CAL_DAY_COLORS[idx % CAL_DAY_COLORS.length];
 }
 let calMonthOffset = 0;
 
-function getDayColorClass(dayName) {
-  const idx = days.indexOf(dayName);
-  if (idx === -1) return CAL_DAY_COLOR_CLASSES[0];
-  return CAL_DAY_COLOR_CLASSES[idx % CAL_DAY_COLOR_CLASSES.length];
-}
-
-function buildMonthGrid(year, month, byDate) {
-  const firstOfMonth = new Date(year, month, 1);
-  const startWeekday = firstOfMonth.getDay();
-  const daysInMonth = new Date(year, month + 1, 0).getDate();
-  const today = todayString();
-
-  const cells = [];
-  for (let i = 0; i < startWeekday; i++) cells.push(null);
-  for (let d = 1; d <= daysInMonth; d++) {
-    const dateStr = dateStrFromDate(new Date(year, month, d));
-    cells.push({
-      day: d,
-      dateStr,
-      workouts: byDate.has(dateStr) ? [...byDate.get(dateStr)].sort((a, b) => orderedDays.indexOf(a) - orderedDays.indexOf(b)) : [],
-      isToday: dateStr === today,
-      isFuture: dateStr > today
-    });
-  }
-  return cells;
-}
-
-function countDatesWithPrefix(byDate, prefix) {
-  let count = 0;
-  byDate.forEach((_, date) => { if (date.startsWith(prefix)) count += 1; });
-  return count;
-}
-
-function renderCalendarModal() {
+function calendarBaseMonth() {
   const base = new Date();
   base.setDate(1);
   base.setMonth(base.getMonth() + calMonthOffset);
-  const year = base.getFullYear();
-  const month = base.getMonth();
+  return { year: base.getFullYear(), month: base.getMonth() };
+}
 
+// Séries e volume (kg) registrados nas datas que começam com o prefixo (mês).
+function monthTotals(prefix) {
+  let sets = 0;
+  let volume = 0;
+  allKnownExercises().forEach(ex => loadHistory(ex).forEach(h => {
+    if (!h.date.startsWith(prefix)) return;
+    sets += 1;
+    if ((h.unit || 'kg') === 'kg') volume += h.weight * h.reps;
+  }));
+  return { sets, volume };
+}
+
+function renderCalendarModal() {
+  const { year, month } = calendarBaseMonth();
   const byDate = getLoggedWorkoutsByDate();
-  const cells = buildMonthGrid(year, month, byDate);
-  const monthCount = countDatesWithPrefix(byDate, `${year}-${pad2(month + 1)}-`);
-  const yearCount = countDatesWithPrefix(byDate, `${year}-`);
-  const isCurrentMonth = calMonthOffset === 0;
-
-  let gridHtml = `<div class="cal-grid-labels">${CAL_DAY_LABELS.map(l => `<span>${l}</span>`).join('')}</div><div class="cal-grid">`;
-  cells.forEach(cell => {
-    if (!cell) { gridHtml += `<div class="cal-cell empty"></div>`; return; }
-    const hasWorkout = cell.workouts.length > 0;
-    const classes = ['cal-cell'];
-    if (cell.isToday) classes.push('today');
-    if (cell.isFuture) classes.push('future');
-    if (hasWorkout) { classes.push('trained'); classes.push(getDayColorClass(cell.workouts[0])); }
-    // Superior e Inferior no mesmo dia: o quadradinho fica dividido nas duas cores.
-    const split = cell.workouts.length > 1 ? ` style="background: ${dayColorsBackground(cell.workouts.map(getDayColor))}"` : '';
-    gridHtml += `<div class="${classes.join(' ')}"${split} ${hasWorkout ? `data-date="${cell.dateStr}"` : ''}>
-      <span class="cal-cell-daynum">${cell.day}</span>
-    </div>`;
+  const prefix = `${year}-${pad2(month + 1)}-`;
+  let monthDays = 0;
+  let yearDays = 0;
+  const calDays = new Map();
+  byDate.forEach((set, date) => {
+    if (date.startsWith(`${year}-`)) yearDays += 1;
+    if (!date.startsWith(prefix)) return;
+    monthDays += 1;
+    const workouts = [...set].sort((a, b) => dayOrder(a) - dayOrder(b));
+    calDays.set(date, { colors: workouts.map(getDayColor), label: workouts.map(dayLabel).join(' e ') });
   });
-  gridHtml += `</div>`;
+  const totals = monthTotals(prefix);
 
   calendarModalContent.innerHTML = `
-    <div class="heatmap-summary">
-      <div class="heatmap-stat"><div class="heatmap-stat-value">${monthCount}</div><div class="heatmap-stat-label">Neste mês</div></div>
-      <div class="heatmap-stat"><div class="heatmap-stat-value">${yearCount}</div><div class="heatmap-stat-label">Neste ano</div></div>
-    </div>
-    <div class="cal-nav">
-      <button class="cal-nav-btn" id="calPrevMonth" aria-label="Mês anterior">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg>
-      </button>
-      <span class="cal-nav-label">${CAL_MONTH_NAMES[month]} ${year}</span>
-      <button class="cal-nav-btn" id="calNextMonth" aria-label="Próximo mês" ${isCurrentMonth ? 'disabled' : ''}>
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
-      </button>
-    </div>
-    <div class="cal-card">
-      ${gridHtml}
-    </div>
-    <div class="cal-legend">
-      ${orderedDays.map(d => `<span class="cal-legend-item"><span class="cal-legend-swatch ${getDayColorClass(d)}"></span>${dayLabel(d)}</span>`).join('')}
-    </div>
+    ${calendarStatsHtml([
+      { value: monthDays, label: monthDays === 1 ? 'Dia treinado' : 'Dias treinados' },
+      { value: totals.sets, label: 'Séries' },
+      { value: totals.volume > 0 ? formatVolume(totals.volume) : '—', label: 'Volume' }
+    ])}
+    ${monthNavHtml(year, month, calMonthOffset === 0)}
+    ${monthCalendarHtml(year, month, calDays)}
+    ${calendarLegendHtml([...orderedDays, RUN_DAY].map(d => ({ color: getDayColor(d), label: dayLabel(d) })))}
+    ${yearSummaryHtml(year, yearDays)}
   `;
-
-  calendarModalContent.querySelectorAll('.cal-cell.trained').forEach(el => {
-    el.addEventListener('click', () => openDayDetail(el.dataset.date));
-  });
-  const prevBtn = document.getElementById('calPrevMonth');
-  const nextBtn = document.getElementById('calNextMonth');
-  if (prevBtn) prevBtn.addEventListener('click', () => { calMonthOffset -= 1; renderCalendarModal(); });
-  if (nextBtn) nextBtn.addEventListener('click', () => { if (calMonthOffset < 0) { calMonthOffset += 1; renderCalendarModal(); } });
 }
 
 function bindCalendarModal() {
@@ -1636,13 +1856,21 @@ function bindCalendarModal() {
   document.getElementById('closeCalendarModal').addEventListener('click', () => {
     calendarModal.classList.remove('visible');
   });
+  bindMonthCalendar(calendarModalContent, {
+    onMonth: step => {
+      if (step > 0 && calMonthOffset >= 0) return;
+      calMonthOffset += step;
+      renderCalendarModal();
+    },
+    onDay: date => openDayDetail(date)
+  });
 }
 
 function buildSparklineSVG(history) {
   const W = 72, H = 28, PAD = 4;
   const recent = history.slice(-8);
   if (recent.length < 2) return '';
-  const weights = recent.map(h => h.weight);
+  const weights = recent.every(h => !h.weight) ? recent.map(h => h.reps) : recent.map(h => h.weight);
   const min = Math.min(...weights);
   const max = Math.max(...weights);
   const range = max - min || 1;
@@ -1696,26 +1924,32 @@ function getExercisesWithHistoryGrouped() {
   return grouped;
 }
 
-function buildEvolutionChartSVG(sessions, unit) {
-  const H = 226, PAD_TOP = 34, PAD_BOTTOM = 36, PAD_LEFT = 38, PAD_RIGHT = 18;
-  const W = 600;
+// record: melhor série de todo o histórico (mesma unidade). Só o ponto que a
+// alcança ganha o destaque de recorde — antes o melhor ponto do período
+// escolhido (ex.: 1M) aparecia como "Recorde pessoal" mesmo sem ser.
+// metric: 'weight' (carga) ou 'reps' (exercício só com peso do corpo, carga 0 —
+// a linha da carga ficava reta no zero).
+function buildEvolutionChartSVG(sessions, unit, record, metric = 'weight') {
+  // Desenhado no tamanho real do celular (antes 600 de largura, encolhia pela metade).
+  const W = 340, H = 190, PAD_TOP = 24, PAD_BOTTOM = 26, PAD_LEFT = 32, PAD_RIGHT = 18;
   const innerH = H - PAD_TOP - PAD_BOTTOM;
   const innerW = W - PAD_LEFT - PAD_RIGHT;
 
   const points = sessions.map((session, si) => {
     let bestIdx = 0;
     session.sets.forEach((s, i) => {
-      if (estimatedMax(s.weight, s.reps) > estimatedMax(session.sets[bestIdx].weight, session.sets[bestIdx].reps)) bestIdx = i;
+      if (isBetterSet(s, session.sets[bestIdx])) bestIdx = i;
     });
     const best = session.sets[bestIdx];
     const x = sessions.length === 1 ? PAD_LEFT + innerW / 2 : PAD_LEFT + (si / (sessions.length - 1)) * innerW;
     return { x, weight: best.weight, reps: best.reps, date: session.date, setCount: session.sets.length };
   });
 
-  const weights = points.map(p => p.weight);
+  const val = p => (metric === 'reps' ? p.reps : p.weight);
+  const weights = points.map(val);
   let min = Math.min(...weights);
   let max = Math.max(...weights);
-  if (min === max) { min -= 5; max += 5; }
+  if (min === max) { min -= metric === 'reps' ? 2 : 5; max += metric === 'reps' ? 2 : 5; }
   const padRatio = points.length <= 3 ? 0.12 : points.length <= 6 ? 0.18 : 0.25;
   const pad = (max - min) * padRatio;
   min -= pad; max += pad;
@@ -1723,16 +1957,15 @@ function buildEvolutionChartSVG(sessions, unit) {
   const yFor = w => PAD_TOP + innerH - ((w - min) / (max - min)) * innerH;
 
   let prPoint = points[0];
-  points.forEach(p => { if (estimatedMax(p.weight, p.reps) > estimatedMax(prPoint.weight, prPoint.reps)) prPoint = p; });
+  points.forEach(p => { if (isBetterSet(p, prPoint)) prPoint = p; });
+  if (record && isBetterSet(record, prPoint)) prPoint = null;
 
   let gridHtml = '';
-  const gridCount = 3;
-  for (let g = 0; g <= gridCount; g++) {
-    const w = min + (max - min) * (g / gridCount);
+  niceTicks(min, max, { minStep: metric === 'reps' ? 1 : 0 }).forEach(w => {
     const y = yFor(w);
     gridHtml += `<line x1="${PAD_LEFT}" y1="${y.toFixed(1)}" x2="${W - PAD_RIGHT}" y2="${y.toFixed(1)}" stroke="rgba(255,255,255,0.05)" stroke-width="1" />`;
-    gridHtml += `<text x="${(PAD_LEFT - 8).toFixed(1)}" y="${(y + 3).toFixed(1)}" text-anchor="end" font-family="var(--font-mono)" font-size="9" fill="var(--text-faint)">${Math.round(w)}</text>`;
-  }
+    gridHtml += `<text x="${(PAD_LEFT - 6).toFixed(1)}" y="${(y + 3).toFixed(1)}" text-anchor="end" font-family="var(--font-mono)" font-size="10" fill="var(--text-faint)">${w}</text>`;
+  });
 
   function smoothPath(pts) {
     if (pts.length < 2) return '';
@@ -1751,28 +1984,28 @@ function buildEvolutionChartSVG(sessions, unit) {
     }
     return d;
   }
-  const linePathStr = smoothPath(points.map(p => ({ x: p.x, y: yFor(p.weight) })));
+  const linePathStr = smoothPath(points.map(p => ({ x: p.x, y: yFor(val(p)) })));
   let areaPathStr = '';
   if (points.length > 1) {
     areaPathStr = `${linePathStr} L ${points[points.length-1].x.toFixed(1)},${H - PAD_BOTTOM + 10} L ${points[0].x.toFixed(1)},${H - PAD_BOTTOM + 10} Z`;
   }
 
-  const labelStep = Math.max(1, Math.ceil(points.length / 6));
+  const labelStep = Math.max(1, Math.ceil(points.length / 5));
   let dotsHtml = '';
   let labelsHtml = '';
   points.forEach((p, idx) => {
-    const y = yFor(p.weight);
+    const y = yFor(val(p));
     const isPR = p === prPoint;
-    const r = isPR ? 6 : 3.5;
+    const r = isPR ? 5.5 : 3.5;
     dotsHtml += `<g class="evo-point" data-idx="${idx}" tabindex="0" role="button" aria-label="${formatDateBR(p.date)}: ${formatLoad(p.weight, unit)} por ${p.reps} reps">
-      <circle class="evo-point-halo" cx="${p.x.toFixed(1)}" cy="${y.toFixed(1)}" r="15" fill="transparent" />
-      <circle class="evo-point-ring" cx="${p.x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r + 6}" fill="none" stroke="var(--accent)" stroke-width="1.5" opacity="0" />
+      <circle class="evo-point-halo" cx="${p.x.toFixed(1)}" cy="${y.toFixed(1)}" r="13" fill="transparent" />
+      <circle class="evo-point-ring" cx="${p.x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r + 5}" fill="none" stroke="var(--accent)" stroke-width="1.5" opacity="0" />
       <circle class="evo-point-dot" cx="${p.x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}" fill="${isPR ? 'var(--accent)' : 'var(--bg)'}" stroke="var(--accent)" stroke-width="${isPR ? 0 : 2}" />
-      ${isPR ? `<text x="${p.x.toFixed(1)}" y="${(y - 14).toFixed(1)}" text-anchor="middle" font-family="var(--font-mono)" font-weight="700" font-size="11" fill="var(--accent)">${p.weight}</text>` : ''}
+      ${isPR ? `<text x="${p.x.toFixed(1)}" y="${(y - 11).toFixed(1)}" text-anchor="middle" font-family="var(--font-mono)" font-weight="700" font-size="11" fill="var(--accent)">${val(p)}</text>` : ''}
     </g>`;
     if (idx % labelStep === 0 || idx === points.length - 1) {
       const [, m, d] = p.date.split('-');
-      labelsHtml += `<text x="${p.x.toFixed(1)}" y="${H - 8}" text-anchor="middle" font-family="var(--font-mono)" font-weight="600" font-size="11" fill="var(--text-dim)">${d}/${m}</text>`;
+      labelsHtml += `<text x="${p.x.toFixed(1)}" y="${H - 6}" text-anchor="middle" font-family="var(--font-mono)" font-weight="600" font-size="10" fill="var(--text-dim)">${d}/${m}</text>`;
     }
   });
 
@@ -1892,10 +2125,20 @@ function renderEvolutionContent(exercise) {
     return;
   }
   const pr = getPersonalRecord(exercise, evoSelectedUnit);
-  const firstSet = sessions[0].sets[0];
-  const delta = pr.weight - firstSet.weight;
+  // "Desde o início": recorde de hoje vs a melhor série do primeiro treino
+  // (antes comparava com a 1ª série, geralmente o aquecimento).
+  const firstSet = bestSetOf(sessions[0].sets);
+  // Só peso do corpo (carga 0 em tudo): a evolução é em repetições.
+  const bodyweight = history.every(h => !h.weight);
+  const delta = bodyweight ? pr.reps - firstSet.reps : Math.round((pr.weight - firstSet.weight) * 100) / 100;
   const progressClass = sessions.length < 2 ? 'flat' : (delta > 0 ? 'pos' : (delta < 0 ? 'neg' : 'flat'));
-  const progressLabel = sessions.length < 2 ? '—' : `${delta > 0 ? '+' : ''}${formatLoad(delta, evoSelectedUnit)}`;
+  const deltaText = bodyweight ? `${delta} rep${Math.abs(delta) === 1 ? '' : 's'}` : formatLoad(delta, evoSelectedUnit);
+  const progressLabel = sessions.length < 2 ? '—' : `${delta > 0 ? '+' : ''}${deltaText}`;
+  const heroHtml = bodyweight
+    ? `<div class="evo-stat-value">${pr.reps}<span class="evo-stat-unit">reps</span></div>
+        <div class="evo-stat-label">PR atual · peso do corpo</div>`
+    : `<div class="evo-stat-value">${pr.weight}<span class="evo-stat-unit">${unitLabel(evoSelectedUnit)}</span></div>
+        <div class="evo-stat-label">PR atual · ${pr.reps} reps</div>`;
   const summaryHtml = `
     <div class="evo-summary">
       <div class="evo-stat">
@@ -1903,8 +2146,7 @@ function renderEvolutionContent(exercise) {
         <div class="evo-stat-label">Sessões</div>
       </div>
       <div class="evo-stat evo-stat-hero">
-        <div class="evo-stat-value">${pr.weight}<span class="evo-stat-unit">${unitLabel(evoSelectedUnit)}</span></div>
-        <div class="evo-stat-label">PR atual · ${pr.reps} reps</div>
+        ${heroHtml}
       </div>
       <div class="evo-stat">
         <div class="evo-stat-value ${progressClass}">${progressLabel}</div>
@@ -1921,15 +2163,13 @@ function renderEvolutionContent(exercise) {
   ];
   if (totalSets >= 2) {
     if (Number.isFinite(evoRangeMonths)) {
-      const cutoff = new Date(todayString());
-      cutoff.setMonth(cutoff.getMonth() - evoRangeMonths);
-      const cutoffStr = dateStrFromDate(cutoff);
+      const cutoffStr = monthsAgo(todayString(), evoRangeMonths);
       sessionsInRange = sessions.filter(s => s.date >= cutoffStr);
       if (sessionsInRange.length < 2) sessionsInRange = sessions.slice(-Math.min(6, sessions.length));
     } else {
       sessionsInRange = sessions;
     }
-    const built = buildEvolutionChartSVG(sessionsInRange, evoSelectedUnit);
+    const built = buildEvolutionChartSVG(sessionsInRange, evoSelectedUnit, pr, bodyweight ? 'reps' : 'weight');
     pointsData = built.pointsData;
     const rangeBtnsHtml = `
       <div class="evo-zoom-row">
@@ -1959,7 +2199,7 @@ function renderEvolutionContent(exercise) {
     const dayTag = session.date === todayString() ? 'HOJE' : session.date === yesterdayString() ? 'ONTEM' : null;
     let bestIdx = 0;
     session.sets.forEach((s, i) => {
-      if (estimatedMax(s.weight, s.reps) > estimatedMax(session.sets[bestIdx].weight, session.sets[bestIdx].reps)) bestIdx = i;
+      if (isBetterSet(s, session.sets[bestIdx])) bestIdx = i;
     });
     const sessionIdxInOrder = sessions.indexOf(session);
     const prevSession = sessionIdxInOrder > 0 ? sessions[sessionIdxInOrder - 1] : null;
@@ -1967,14 +2207,13 @@ function renderEvolutionContent(exercise) {
     if (prevSession) {
       let prevBestIdx = 0;
       prevSession.sets.forEach((s, i) => {
-        if (estimatedMax(s.weight, s.reps) > estimatedMax(prevSession.sets[prevBestIdx].weight, prevSession.sets[prevBestIdx].reps)) prevBestIdx = i;
+        if (isBetterSet(s, prevSession.sets[prevBestIdx])) prevBestIdx = i;
       });
       const curBest = session.sets[bestIdx];
       const prevBest = prevSession.sets[prevBestIdx];
-      const curEst = estimatedMax(curBest.weight, curBest.reps);
-      const prevEst = estimatedMax(prevBest.weight, prevBest.reps);
-      if (curEst > prevEst) trendHtml = `<span class="evo-session-trend up">↑ melhor que o treino anterior</span>`;
-      else if (curEst < prevEst) trendHtml = `<span class="evo-session-trend down">↓ abaixo do treino anterior</span>`;
+      const diff = compareSets(curBest, prevBest);
+      if (diff > 0) trendHtml = `<span class="evo-session-trend up">↑ melhor que o treino anterior</span>`;
+      else if (diff < 0) trendHtml = `<span class="evo-session-trend down">↓ abaixo do treino anterior</span>`;
       else trendHtml = `<span class="evo-session-trend flat">= igual ao treino anterior</span>`;
     }
     let setsHtml = '';
@@ -2029,7 +2268,7 @@ function renderEvolutionContent(exercise) {
         if (!p || !tooltip || !session) return;
         let bestIdx = 0;
         session.sets.forEach((s, i) => {
-          if (estimatedMax(s.weight, s.reps) > estimatedMax(session.sets[bestIdx].weight, session.sets[bestIdx].reps)) bestIdx = i;
+          if (isBetterSet(s, session.sets[bestIdx])) bestIdx = i;
         });
         const setsHtml = session.sets.map((s, i) => `<div class="evo-set-block ${i === bestIdx ? 'best' : ''}"><span class="evo-set-label">S${i + 1}</span><span class="evo-set-value">${formatLoad(s.weight, evoSelectedUnit)} <span class="evo-set-chip-x">×</span> ${s.reps}</span></div>`).join('');
         tooltip.innerHTML = `
@@ -2069,20 +2308,21 @@ function renderCatalogTab() {
     grouped[cat].forEach(ex => {
       const exEsc = ex.replace(/'/g, "\\'");
       html += `
-        <div class="catalog-item" data-name="${ex.toLowerCase()}" onclick="showExerciseGuide('${exEsc}')">
+        <div class="catalog-item" data-name="${searchKey(ex)}" onclick="showExerciseGuide('${exEsc}')">
           <span>${ex}</span>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
         </div>`;
     });
     html += `</div></div>`;
   }
-  html += `</div>`;
+  html += `</div><p class="plan-empty" id="catalogEmpty" hidden>Nenhum exercício encontrado.</p>`;
   catalogModalContent.innerHTML = html;
   
   const searchInput = document.getElementById('catalogSearchInput');
   searchInput.addEventListener('input', (e) => {
-    const term = e.target.value.toLowerCase();
-    document.querySelectorAll('.catalog-category').forEach(catEl => {
+    const term = searchKey(e.target.value.trim());
+    let anyVisible = false;
+    catalogModalContent.querySelectorAll('.catalog-category').forEach(catEl => {
       let hasVisible = false;
       catEl.querySelectorAll('.catalog-item').forEach(item => {
         const match = item.dataset.name.includes(term);
@@ -2090,7 +2330,9 @@ function renderCatalogTab() {
         if (match) hasVisible = true;
       });
       catEl.style.display = hasVisible ? 'block' : 'none';
+      if (hasVisible) anyVisible = true;
     });
+    document.getElementById('catalogEmpty').hidden = anyVisible;
   });
 }
 
@@ -2110,7 +2352,7 @@ function renderCategorizedStats() {
     if (prev) {
       const delta = describeLoadDelta(last, prev, lastUnit);
       const arrow = { up: '↑', down: '↓', same: '=' }[delta.dir];
-      trend = `<span class="stat-trend ${delta.dir === 'same' ? '' : delta.dir}">${arrow} ${delta.text.replace(/^[+-]/, '')} vs treino anterior</span>`;
+      trend = `<span class="stat-trend ${delta.dir === 'same' ? '' : delta.dir}">${delta.dir === 'same' ? '= igual ao anterior' : `${arrow} ${delta.text.replace(/^[+-]/, '')} vs anterior`}</span>`;
     }
     const catName = db[ex] ? db[ex].cat : "Outros";
     if (!categories[catName]) categories[catName] = [];
@@ -2156,27 +2398,21 @@ function calculateWeeklyVolume() {
   const weekEnd = getWeekEnd(weekStart);
   const vol = {};
   allMuscles.forEach(m => vol[m] = 0);
-  for (let i = 0; i < localStorage.length; i++) {
-    const key = localStorage.key(i);
-    if (!key.startsWith("series:")) continue;
-    const parts = key.split(":");
-    if (parts.length < 4) continue;
-    const recordDateStr = parts[3];
-    if (recordDateStr < weekStart || recordDateStr > weekEnd) continue;
-    const setsArray = JSON.parse(localStorage.getItem(key));
-    const numSets = setsArray.length;
-    if (numSets === 0) continue;
-    let realEx = null;
-    for (const real in db) { if (safeId(real) === parts[2]) realEx = real; }
-    if (!realEx || !db[realEx]) continue;
-    const group = m => VOLUME_GROUP[m] || m;
-    const prim = group(db[realEx].prim);
+  // Conta pelo histórico, a mesma fonte do calendário (antes usava as marcas
+  // "series:", que podiam não bater com o que o calendário mostrava).
+  const group = m => VOLUME_GROUP[m] || m;
+  allKnownExercises().forEach(ex => {
+    const info = db[ex];
+    if (!info) return;
+    const numSets = loadHistory(ex).filter(h => h.date >= weekStart && h.date <= weekEnd).length;
+    if (numSets === 0) return;
+    const prim = group(info.prim);
     if (vol[prim] !== undefined) vol[prim] += numSets;
     // Auxiliar do mesmo grupo do principal (ex.: glúteo máximo na abdutora) não soma de novo.
-    [...new Set(db[realEx].sec.map(group))].filter(s => s !== prim).forEach(s => {
+    [...new Set(info.sec.map(group))].filter(s => s !== prim).forEach(s => {
       if (vol[s] !== undefined) vol[s] += (numSets * 0.5);
     });
-  }
+  });
   const isCurrentWeek = volumeWeekOffset === 0;
   const weekLabel = isCurrentWeek ? 'Esta semana' : `${formatDateShortBR(weekStart)} – ${formatDateShortBR(weekEnd)}`;
   const navHtml = `
@@ -2233,21 +2469,23 @@ function migrateWorkoutDate(day, fromDate, toDate) {
   let movedAny = false;
 
   exercises.forEach(ex => {
-    const hKey = historyKey(ex);
-    const rawHistory = JSON.parse(localStorage.getItem(hKey) || '[]');
-    const isMoved = h => h.date === fromDate && entryInDay(h, day);
-    if (rawHistory.some(isMoved)) movedAny = true;
-    const history = rawHistory.map(h => isMoved(h) ? { ...h, date: toDate } : h);
-    localStorage.setItem(hKey, JSON.stringify(history));
+    const rawHistory = readJSON(historyKey(ex), []);
+    const isMoved = h => h && h.date === fromDate && entryInDay(h, day);
+    const movedIndexes = rawHistory.filter(isMoved).map(h => h.setIndex);
+    if (movedIndexes.length) {
+      movedAny = true;
+      saveHistory(ex, rawHistory.map(h => isMoved(h) ? { ...h, date: toDate } : h));
+    }
 
+    // Marcas de "série feita" da data nova: as que já havia + as da data antiga
+    // + as das séries movidas (as marcas de dias antigos são apagadas na
+    // abertura do app, o histórico é que guarda tudo).
     const oldSets = `series:${safeId(day)}:${safeId(ex)}:${fromDate}`;
     const newSets = `series:${safeId(day)}:${safeId(ex)}:${toDate}`;
-    const setsVal = localStorage.getItem(oldSets);
-    if (setsVal !== null) {
-      localStorage.setItem(newSets, setsVal);
-      localStorage.removeItem(oldSets);
-      movedAny = true;
-    }
+    if (localStorage.getItem(oldSets) !== null) movedAny = true;
+    const marks = [...readJSON(newSets, []), ...readJSON(oldSets, []), ...movedIndexes].filter(Number.isInteger);
+    if (marks.length) localStorage.setItem(newSets, JSON.stringify([...new Set(marks)].sort((a, b) => a - b)));
+    localStorage.removeItem(oldSets);
   });
 
   const oldStart = `sessaoInicio:${safeId(day)}:${fromDate}`;
@@ -2259,13 +2497,14 @@ function migrateWorkoutDate(day, fromDate, toDate) {
     movedAny = true;
   }
 
-  const oldEnd = `sessaoFim:${safeId(day)}:${fromDate}`;
-  const newEnd = `sessaoFim:${safeId(day)}:${toDate}`;
-  const endVal = localStorage.getItem(oldEnd);
-  if (endVal !== null) {
-    localStorage.setItem(newEnd, endVal);
-    localStorage.removeItem(oldEnd);
-  }
+  // Horário de fim e exercícios pulados acompanham a data nova.
+  ['sessaoFim', 'pulados'].forEach(prefix => {
+    const oldKey = `${prefix}:${safeId(day)}:${fromDate}`;
+    const value = localStorage.getItem(oldKey);
+    if (value === null) return;
+    localStorage.setItem(`${prefix}:${safeId(day)}:${toDate}`, value);
+    localStorage.removeItem(oldKey);
+  });
 
   if (!movedAny) return false;
 
@@ -2320,6 +2559,22 @@ function bindBackupSystem() {
   if (syncDisplay) syncDisplay.innerText = syncId;
   updateSyncStatus();
 
+  // Tocar no código copia (para anotar ou mandar para o outro celular).
+  document.getElementById('syncCodeBox').addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(syncId);
+      showToast('Código copiado', `${syncId} está na área de transferência.`);
+    } catch (e) {
+      showToast('Seu código', syncId);
+    }
+  });
+  // Abrir as Configurações mostra o estado atual do backup (pendente, último envio...)
+  // e o espaço usado.
+  document.getElementById('configBtn').addEventListener('click', () => {
+    updateSyncStatus();
+    updateStorageUsage();
+  });
+
   const syncNowBtn = document.getElementById('syncNowBtn');
   if (syncNowBtn) {
     syncNowBtn.addEventListener('click', () => {
@@ -2340,9 +2595,11 @@ function bindBackupSystem() {
             await reg.unregister();
           }
         }
+        // Apaga só os arquivos do app; fotos dos exercícios e Firebase ficam
+        // (não mudam e seriam baixados de novo à toa).
         if (window.caches) {
           const keys = await caches.keys();
-          await Promise.all(keys.map(k => caches.delete(k)));
+          await Promise.all(keys.filter(k => k.startsWith('treino-cache-')).map(k => caches.delete(k)));
         }
       } catch (e) {
         console.warn('Erro ao limpar cache:', e);
@@ -2430,6 +2687,21 @@ function bindBackupSystem() {
       location.reload();
     }
   });
+}
+
+// Espaço usado pelos dados do app. Os navegadores guardam no máximo ~5 MB por
+// site (menos no iPhone); acima de 2 milhões de caracteres, avisa.
+const STORAGE_WARN_CHARS = 2000000;
+function updateStorageUsage() {
+  let chars = 0;
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    chars += key.length + (localStorage.getItem(key) || '').length;
+  }
+  document.getElementById('storageUsed').textContent = chars < 1e5
+    ? `${Math.max(1, Math.round(chars / 1000))} KB`
+    : `${(chars / 1e6).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} MB`;
+  document.getElementById('storageWarn').hidden = chars < STORAGE_WARN_CHARS;
 }
 
 function replaceLocalData(data) {

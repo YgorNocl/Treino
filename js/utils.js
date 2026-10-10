@@ -24,6 +24,14 @@ export function formatLoad(weight, unit) { return `${weight}${unit === 'placas' 
 
 export function estimatedMax(weight, reps) { return weight * (1 + reps / 30); }
 
+// Qual série é melhor: a de maior carga estimada (1RM); empate é decidido pelas
+// repetições. Sem o desempate, exercício com peso do corpo (carga 0) nunca tinha
+// recorde — toda série valia 0.
+export function compareSets(a, b) {
+  return (estimatedMax(a.weight, a.reps) - estimatedMax(b.weight, b.reps)) || (a.reps - b.reps);
+}
+export function isBetterSet(a, b) { return compareSets(a, b) > 0; }
+
 export function formatDateBR(dateStr) {
   const [y, m, d] = dateStr.split('-');
   return `${d}/${m}/${y}`;
@@ -41,6 +49,53 @@ export function getWeekStart(dateStr, offset = 0) {
   const date = new Date(y, m - 1, d);
   date.setDate(date.getDate() - date.getDay() + offset * 7);
   return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+}
+
+// Data "AAAA-MM-DD" de n meses antes, no fuso local. (new Date('AAAA-MM-DD')
+// lê a data em UTC: no Brasil ela vira o dia anterior às 21h.)
+export function monthsAgo(dateStr, n) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return dateStrFromDate(new Date(y, m - 1 - n, d));
+}
+
+// Lê JSON do localStorage sem quebrar o app: valor corrompido (ou de outro
+// tipo, ex.: objeto no lugar de lista) volta como `fallback`. Não grava nada,
+// então o valor original continua lá para o backup.
+export function readJSON(key, fallback) {
+  let value;
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw === null) return fallback;
+    value = JSON.parse(raw);
+  } catch (e) {
+    return fallback;
+  }
+  if (Array.isArray(fallback)) return Array.isArray(value) ? value : fallback;
+  if (fallback && typeof fallback === 'object') return value && typeof value === 'object' && !Array.isArray(value) ? value : fallback;
+  return value ?? fallback;
+}
+
+// Lista do localStorage com cache: o mesmo texto guardado não é convertido de
+// novo. O histórico é lido várias vezes a cada série registrada; com anos de
+// treino, converter tudo de novo em cada leitura deixava o toque lento no
+// celular. `build(lista)` prepara os itens uma vez (validar, completar campos) e
+// precisa ser sempre a mesma função. Devolve uma cópia da lista; os itens são
+// congelados — para mudar um item, crie outro objeto.
+const listCache = new Map();
+export function readListCached(key, build) {
+  const raw = localStorage.getItem(key);
+  const hit = listCache.get(key);
+  if (hit && hit.raw === raw && hit.build === build) return hit.list.slice();
+  let parsed = [];
+  if (raw !== null) {
+    try {
+      const value = JSON.parse(raw);
+      if (Array.isArray(value)) parsed = value;
+    } catch (e) { /* corrompido: lista vazia, sem apagar o original */ }
+  }
+  const list = build(parsed).map(item => (item && typeof item === 'object' ? Object.freeze(item) : item));
+  listCache.set(key, { raw, list, build });
+  return list.slice();
 }
 
 export function getWeekEnd(weekStartStr) {
@@ -68,17 +123,30 @@ export function emptyStateHtml(kind, title, text = '') {
   return `<div class="empty-state">${art}<strong>${title}</strong>${text ? `<span>${text}</span>` : ''}</div>`;
 }
 
-// Fundo de um dia no calendário: uma cor, ou o quadradinho dividido em partes
-// iguais lado a lado (com uma linha fina escura entre elas) quando houve mais de
-// um treino no dia.
-export function dayColorsBackground(colors) {
-  if (colors.length <= 1) return colors[0] || 'transparent';
-  const step = 100 / colors.length;
-  const parts = colors.map((c, i) => {
-    const from = i === 0 ? '0%' : `calc(${(i * step).toFixed(2)}% + 1px)`;
-    const to = i === colors.length - 1 ? '100%' : `calc(${((i + 1) * step).toFixed(2)}% - 1px)`;
-    const sep = i === colors.length - 1 ? '' : `, rgba(11, 12, 14, 0.55) ${to} calc(${((i + 1) * step).toFixed(2)}% + 1px)`;
-    return `${c} ${from} ${to}${sep}`;
-  }).join(', ');
-  return `linear-gradient(90deg, ${parts})`;
+
+// Card aberto perto do fim da tela: rola só o necessário para ele aparecer
+// inteiro (campos e botão de registrar), depois da animação de abrir.
+export function revealCard(card) {
+  const smooth = !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  setTimeout(() => {
+    if (card.isConnected && card.classList.contains('expanded')) card.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'nearest' });
+  }, 360);
+}
+
+// Texto para busca: minúsculo e sem acento ("Tríceps" acha com "triceps").
+export function searchKey(text) {
+  return String(text).normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase();
+}
+
+// Marcas do eixo dos gráficos em valores "redondos" (35, 40, 45 / 12, 13, 14),
+// sem repetir número. minStep: menor passo (1 para repetições e segundos).
+export function niceTicks(min, max, { target = 4, minStep = 0 } = {}) {
+  const raw = (max - min) / target || 1;
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const norm = raw / mag;
+  let step = (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 2.5 ? 2.5 : norm <= 5 ? 5 : 10) * mag;
+  step = Math.max(step, minStep);
+  const ticks = [];
+  for (let v = Math.ceil(min / step) * step; v <= max + 1e-9; v += step) ticks.push(Math.round(v * 100) / 100);
+  return ticks;
 }

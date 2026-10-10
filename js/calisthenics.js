@@ -1,5 +1,6 @@
 import {
   MODE_SKILLS,
+  CALI_STEPS,
   fmtShort,
   fmtValue,
   fmtSeconds,
@@ -10,8 +11,9 @@ import {
 } from './calisthenics-data.js';
 import * as store from './calisthenics-store.js';
 import { initPanels, openCalendar, openProgress, openGuide, openDay, closePanels, sessionRowHtml } from './calisthenics-panels.js';
-import { todayString, parseNum } from './utils.js';
-import { primeRestAlert, alertRestEnd } from './rest-timer.js';
+import { todayString, parseNum, revealCard } from './utils.js';
+import { startRest, primeAlert, alertTimerEnd } from './rest-timer.js';
+import { setAwake } from './wake-lock.js';
 import { openSetEditor } from './set-editor.js';
 import { confirmDialog } from './dialog.js';
 import { showSummaryModal, longDateLabel, shareOrDownload } from './summary.js';
@@ -30,7 +32,8 @@ const state = {
   mode: 'cali',
   skillId: null,
   openStepId: null,
-  today: null
+  today: null,
+  renderedDate: null // data em que a tela foi desenhada (ver refreshIfNewDay)
 };
 
 // Skill selecionada nos botões do topo, lembrada por modo (como Superior/Inferior na academia).
@@ -50,8 +53,9 @@ function skillPillLabel(skill) {
   return skill.short || skill.name;
 }
 
-const timer = { stepId: null, phase: null, startedAt: 0, prepEndsAt: 0, handle: null, wakeLock: null };
-const rest = { endsAt: 0, total: 0, remaining: 0, handle: null, stepId: null };
+// Um cronômetro por vez: o de sustentação da calistenia (kind 'up', conta para
+// cima) ou o regressivo da mobilidade (kind 'down').
+const timer = { stepId: null, kind: null, phase: null, startedAt: 0, prepEndsAt: 0, endsAt: 0, handle: null, goalHit: false };
 let clockHandle = null;
 
 const ICONS = {
@@ -59,6 +63,8 @@ const ICONS = {
   clock: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>',
   plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M12 5v14M5 12h14"/></svg>',
   trend: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline><polyline points="17 6 23 6 23 12"></polyline></svg>',
+  play: '<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.5-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/></svg>',
+  stop: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>',
   repeat: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"></polyline><path d="M3 11V9a4 4 0 0 1 4-4h14"></path><polyline points="7 23 3 19 7 15"></polyline><path d="M21 13v2a4 4 0 0 1-4 4H3"></path></svg>'
 };
 
@@ -99,7 +105,6 @@ function applyMode(mode, persist) {
     startClock();
   } else {
     cancelTimer();
-    hideRest();
     stopClock();
     closePanels();
   }
@@ -115,6 +120,7 @@ function updateHeader(index) {
 
 function render() {
   cancelTimer();
+  state.renderedDate = todayString();
   const index = store.buildDayIndex(state.mode);
   renderMain(index);
   updateHeader(index);
@@ -166,10 +172,16 @@ function finishButtonHtml(finished, sets) {
     : `<button type="button" class="save-btn cali-finish-btn" id="caliFinishBtn" ${sets > 0 ? '' : 'disabled'}>Finalizar Treino Atual</button>`;
 }
 
+// Treino "em andamento": não finalizado e com série nos últimos 45 min.
+const SESSION_IDLE_MS = 45 * 60 * 1000;
+
+function isSessionLive(today, finished) {
+  return !!(today && today.first) && !finished && Date.now() - today.last < SESSION_IDLE_MS;
+}
+
 function clockText(today, finished) {
   if (!today || !today.first) return '00:00';
-  const live = !finished && Date.now() - today.last < 45 * 60 * 1000;
-  const end = live ? Date.now() : today.last;
+  const end = isSessionLive(today, finished) ? Date.now() : today.last;
   return fmtClock((end - today.first) / 1000);
 }
 
@@ -296,33 +308,53 @@ function chipGroupHtml(pref, options, labels, active) {
     .join('');
 }
 
+// Bolinha vazia registra a série (igual à academia); preenchida abre o editor.
 function setTrackerHtml(step, todaySets, label) {
   const count = Math.max(step.goal.sets, todaySets.length);
   const dots = Array.from({ length: count }, (_, i) => {
     const set = todaySets[i];
-    if (!set) return `<span class="set-dot">${i + 1}</span>`;
+    if (!set) return `<button type="button" class="set-dot" data-register aria-label="Registrar série ${i + 1}">${i + 1}</button>`;
     return `<button type="button" class="set-dot filled" data-edit="${set.t}" data-index="${i}" aria-label="Editar série ${i + 1}">${label(set)}</button>`;
   }).join('');
   return `<div class="set-tracker" id="caliDots-${step.id}">${dots}</div>`;
 }
 
-function mobilityBodyHtml(step, todaySets) {
-  const doneToday = todaySets.length >= step.goal.sets;
+// Texto do alvo parado: "30s de sustentação por série" / "10 repetições".
+function mobilityIdleText(step) {
   const isTime = step.mode === 'time';
   const value = isTime ? fmtSeconds(step.goal.value) : String(step.goal.value);
   const unit = isTime ? 'de sustentação' : step.goal.value === 1 ? 'repetição' : 'repetições';
+  return { value, sub: `${unit}${step.goal.sets > 1 ? ' por série' : ''}` };
+}
+
+function mobilityBodyHtml(step, todaySets) {
+  const doneToday = todaySets.length >= step.goal.sets;
+  const isTime = step.mode === 'time';
   const icon = isTime ? ICONS.clock : ICONS.repeat;
+  const idle = mobilityIdleText(step);
+  const label = step.goal.sets > 1 ? 'Registrar série' : doneToday ? 'Fazer de novo' : 'Concluir exercício';
+  // Alongamento de tempo: ▶ conta o tempo para você (preparo de 5s, bipe no fim)
+  // e registra a série sozinho — antes era preciso contar de cabeça ou usar
+  // outro cronômetro.
+  const timerBtn = isTime
+    ? `<button type="button" class="rest-btn-trigger cali-mob-timer-btn" id="caliMobTimer-${step.id}" aria-label="Contar ${idle.value}">${ICONS.play}</button>`
+    : '';
+  // Bolinhas também no exercício de 1 série: sem elas não havia como corrigir ou
+  // apagar um "Concluir" tocado sem querer.
   return `
-    ${step.goal.sets > 1 ? setTrackerHtml(step, todaySets, () => '✓') : ''}
-    <div class="cali-mobility-target ${doneToday ? 'done' : ''}">
+    ${setTrackerHtml(step, todaySets, () => '✓')}
+    <div class="cali-mobility-target ${doneToday ? 'done' : ''}" id="caliMobTarget-${step.id}" data-phase="idle">
       <span class="cali-mobility-icon">${icon}</span>
       <div class="cali-mobility-info">
-        <span class="cali-mobility-value">${value}</span>
-        <span class="cali-mobility-sub">${unit}${step.goal.sets > 1 ? ' por série' : ''}</span>
+        <span class="cali-mobility-value" id="caliMobValue-${step.id}">${idle.value}</span>
+        <span class="cali-mobility-sub" id="caliMobSub-${step.id}">${idle.sub}</span>
       </div>
       ${doneToday ? `<span class="cali-mobility-check" aria-label="Feito hoje">${ICONS.check}</span>` : ''}
     </div>
-    <button type="button" class="save-btn cali-mobility-btn" id="caliMobilityBtn-${step.id}">${step.goal.sets > 1 ? 'Registrar série' : doneToday ? 'Fazer de novo' : 'Concluir exercício'}</button>`;
+    <div class="card-actions cali-mobility-actions">
+      <button type="button" class="save-btn cali-mobility-btn" id="caliMobilityBtn-${step.id}">${label}</button>
+      ${timerBtn}
+    </div>`;
 }
 
 function stepBodyHtml(step, todaySets) {
@@ -433,6 +465,8 @@ function toggleStep(stepId) {
     card.classList.toggle('expanded', open);
     card.querySelector('.exercise-header').setAttribute('aria-expanded', String(open));
   });
+  const opened = state.openStepId && root.querySelector(`[data-step-id="${state.openStepId}"]`);
+  if (opened) revealCard(opened);
 }
 
 function bindStepCard(step) {
@@ -450,10 +484,20 @@ function bindStepCard(step) {
   card.querySelectorAll('[data-edit]').forEach(btn => {
     btn.addEventListener('click', () => editSet(step, Number(btn.dataset.edit), Number(btn.dataset.index)));
   });
+  card.querySelectorAll('[data-register]').forEach(btn => {
+    btn.addEventListener('click', () => (step.area === 'mobilidade' ? registerMobility(step) : registerSet(step)));
+  });
 
   if (step.area === 'mobilidade') {
     const mobilityBtn = $(`caliMobilityBtn-${step.id}`);
     if (mobilityBtn) mobilityBtn.addEventListener('click', () => registerMobility(step));
+    const countdownBtn = $(`caliMobTimer-${step.id}`);
+    if (countdownBtn) {
+      countdownBtn.addEventListener('click', () => {
+        if (timer.kind === 'down' && timer.stepId === step.id) cancelTimer();
+        else startCountdown(step);
+      });
+    }
   } else {
     const input = $(`caliValue-${step.id}`);
 
@@ -514,7 +558,18 @@ function popLastSetDot(step) {
   if (dots.length) dots[dots.length - 1].classList.add('pop');
 }
 
+// Toque duplo sem querer registrava duas séries de uma vez.
+const REGISTER_DEBOUNCE_MS = 700;
+const lastRegisterAt = new Map();
+function isDoubleTap(step) {
+  const now = Date.now();
+  if (now - (lastRegisterAt.get(step.id) || 0) < REGISTER_DEBOUNCE_MS) return true;
+  lastRegisterAt.set(step.id, now);
+  return false;
+}
+
 function registerMobility(step) {
+  if (isDoubleTap(step)) return;
   cancelTimer();
   store.addSet(step.id, step.goal.value, '');
   vibrate(80);
@@ -532,12 +587,16 @@ function registerSet(step) {
     toast('Valor inválido', step.mode === 'time' ? 'Informe o tempo em segundos.' : 'Informe o número de repetições.');
     return;
   }
+  if (isDoubleTap(step)) return;
   cancelTimer();
   const noteInput = $(`caliNote-${step.id}`);
   const note = noteInput ? noteInput.value.trim().slice(0, 80) : '';
+  // Recorde só com treino em outro dia para comparar (no primeiro treino, cada
+  // série melhor que a anterior virava "Novo recorde").
   const previousBest = store.getBest(step.id);
+  const hasEarlierDays = store.getBestBefore(step.id, todayString()) > 0;
   store.addSet(step.id, value, note);
-  if (previousBest > 0 && value > previousBest) {
+  if (hasEarlierDays && value > previousBest) {
     toast('🏆 Novo recorde!', `${fmtValue(step, value)} supera seu melhor anterior (${fmtValue(step, previousBest)}).`);
   }
   vibrate(60);
@@ -560,7 +619,7 @@ function editSet(step, t, index) {
     fields: [{ key: 'v', label: isTime ? 'Tempo (segundos)' : 'Repetições', value: set.v, inputmode: 'numeric' }],
     onSave: ({ v }) => {
       const value = Math.round(parseNum(v));
-      if (!(value >= 1 && value <= max)) return false;
+      if (!(value >= 1 && value <= max)) return 'v';
       store.updateSet(step.id, t, value);
       state.openStepId = step.id;
       updateStepCard(step);
@@ -576,38 +635,90 @@ function editSet(step, t, index) {
 function paintIdleAll() {
   root.querySelectorAll('.cali-timer').forEach(box => {
     box.dataset.phase = 'idle';
+    delete box.dataset.goal;
     box.querySelector('.cali-timer-display').textContent = '0.0';
     box.querySelector('.cali-timer-btn').textContent = 'Iniciar cronômetro';
   });
 }
 
-async function requestWakeLock() {
-  if (!('wakeLock' in navigator)) return;
-  try {
-    const lock = await navigator.wakeLock.request('screen');
-    if (timer.stepId) timer.wakeLock = lock;
-    else lock.release().catch(() => {});
-  } catch (e) {
-    timer.wakeLock = null;
+function cancelTimer() {
+  if (timer.handle) clearInterval(timer.handle);
+  const countdownStep = timer.kind === 'down' ? timer.stepId : null;
+  timer.handle = null;
+  timer.kind = null;
+  timer.phase = null;
+  timer.stepId = null;
+  setAwake('cali-timer', false);
+  if (countdownStep) paintMobilityIdle(countdownStep);
+}
+
+// ----- Regressivo da mobilidade -----
+const MOBILITY_PREP_SECONDS = 5;
+
+function paintMobilityIdle(stepId) {
+  const step = CALI_STEPS[stepId];
+  const box = $(`caliMobTarget-${stepId}`);
+  if (!step || !box) return;
+  const idle = mobilityIdleText(step);
+  box.dataset.phase = 'idle';
+  $(`caliMobValue-${stepId}`).textContent = idle.value;
+  $(`caliMobSub-${stepId}`).textContent = idle.sub;
+  const btn = $(`caliMobTimer-${stepId}`);
+  if (btn) {
+    btn.innerHTML = ICONS.play;
+    btn.setAttribute('aria-label', `Contar ${idle.value}`);
   }
 }
 
-function releaseWakeLock() {
-  if (!timer.wakeLock) return;
-  timer.wakeLock.release().catch(() => {});
-  timer.wakeLock = null;
+function tickCountdown() {
+  const step = CALI_STEPS[timer.stepId];
+  const box = step && $(`caliMobTarget-${step.id}`);
+  if (!box) return;
+  const now = Date.now();
+  if (timer.phase === 'prep') {
+    const left = Math.ceil((timer.prepEndsAt - now) / 1000);
+    if (left > 0) {
+      box.dataset.phase = 'prep';
+      $(`caliMobValue-${step.id}`).textContent = String(left);
+      $(`caliMobSub-${step.id}`).textContent = 'Prepare-se';
+      return;
+    }
+    timer.phase = 'run';
+    timer.endsAt = timer.prepEndsAt + step.goal.value * 1000;
+    vibrate(150);
+  }
+  const left = Math.max(0, Math.ceil((timer.endsAt - now) / 1000));
+  if (left <= 0) {
+    cancelTimer();
+    alertTimerEnd();
+    registerMobility(step);
+    return;
+  }
+  box.dataset.phase = 'run';
+  $(`caliMobValue-${step.id}`).textContent = fmtSeconds(left);
+  $(`caliMobSub-${step.id}`).textContent = 'Segure...';
 }
 
-function cancelTimer() {
-  if (timer.handle) clearInterval(timer.handle);
-  timer.handle = null;
-  timer.phase = null;
-  timer.stepId = null;
-  releaseWakeLock();
+function startCountdown(step) {
+  cancelTimer();
+  paintIdleAll();
+  primeAlert();
+  timer.stepId = step.id;
+  timer.kind = 'down';
+  timer.phase = 'prep';
+  timer.prepEndsAt = Date.now() + MOBILITY_PREP_SECONDS * 1000;
+  const btn = $(`caliMobTimer-${step.id}`);
+  if (btn) {
+    btn.innerHTML = ICONS.stop;
+    btn.setAttribute('aria-label', 'Parar');
+  }
+  setAwake('cali-timer', true);
+  timer.handle = setInterval(tickCountdown, 200);
+  tickCountdown();
 }
 
 function tickTimer() {
-  if (!timer.stepId) return;
+  if (!timer.stepId || timer.kind !== 'up') return;
   const box = $(`caliTimer-${timer.stepId}`);
   const display = $(`caliTimerDisplay-${timer.stepId}`);
   const button = $(`caliTimerBtn-${timer.stepId}`);
@@ -625,15 +736,27 @@ function tickTimer() {
     timer.startedAt = timer.prepEndsAt;
     vibrate(200);
   }
+  const elapsed = (now - timer.startedAt) / 1000;
   box.dataset.phase = 'run';
-  display.textContent = fmtStopwatch((now - timer.startedAt) / 1000);
+  display.textContent = fmtStopwatch(elapsed);
   button.textContent = 'Parar e usar o tempo';
+  // Bateu a meta (ex.: 15s): bipe e vibração, e o relógio segue contando —
+  // segurando a posição não dá para ficar olhando a tela.
+  const step = CALI_STEPS[timer.stepId];
+  if (!timer.goalHit && step && elapsed >= step.goal.value) {
+    timer.goalHit = true;
+    box.dataset.goal = 'hit';
+    alertTimerEnd();
+  }
 }
 
 function startTimer(step) {
   cancelTimer();
   paintIdleAll();
+  primeAlert();
   timer.stepId = step.id;
+  timer.kind = 'up';
+  timer.goalHit = false;
   const prep = store.getPrepSeconds(state.mode);
   if (prep > 0) {
     timer.phase = 'prep';
@@ -642,7 +765,7 @@ function startTimer(step) {
     timer.phase = 'run';
     timer.startedAt = Date.now();
   }
-  requestWakeLock();
+  setAwake('cali-timer', true);
   timer.handle = setInterval(tickTimer, 100);
   tickTimer();
 }
@@ -662,90 +785,43 @@ function stopTimer(step) {
   vibrate([120, 60, 120]);
 }
 
-function tickRest() {
-  rest.remaining = Math.max(0, Math.round((rest.endsAt - Date.now()) / 1000));
-  const m = Math.floor(rest.remaining / 60);
-  const sec = rest.remaining % 60;
-  $('caliRestTime').textContent = `${m}:${String(sec).padStart(2, '0')}`;
-  $('caliRestProgress').style.setProperty('--p', Math.max(0, Math.min(rest.remaining / rest.total, 1)));
-  if (rest.remaining <= 0) {
-    hideRest();
-    alertRestEnd();
-  }
-}
-
-function startRest(seconds) {
-  rest.total = seconds;
-  rest.endsAt = Date.now() + seconds * 1000;
-  primeRestAlert();
-  $('caliRestOverlay').classList.add('visible');
-  document.querySelectorAll('.cali-preset').forEach(btn => {
-    btn.classList.toggle('active', Number(btn.dataset.time) === seconds);
-  });
-  clearInterval(rest.handle);
-  rest.handle = setInterval(tickRest, 250);
-  tickRest();
-}
-
-// Descanso por exercício, como na academia: o atalho escolhido fica salvo para o
-// passo; sem escolha salva, usa o tempo padrão do modo.
-const STEP_REST_PREFIX = 'cali:rest:step:';
-
+// Descanso por exercício, como na academia (mesmo painel): o atalho escolhido
+// fica salvo para o passo e vira o padrão do modo; sem escolha salva, usa o
+// tempo padrão do modo.
 function startRestFor(step) {
-  rest.stepId = step.id;
-  const saved = Number(localStorage.getItem(STEP_REST_PREFIX + step.id));
-  $('caliRestOverlay').querySelector('.rest-tag').textContent = `Descanso · ${step.name}`;
-  startRest(saved > 0 ? saved : store.getRestSeconds(state.mode));
-}
-
-function hideRest() {
-  clearInterval(rest.handle);
-  rest.handle = null;
-  const overlay = $('caliRestOverlay');
-  if (overlay) overlay.classList.remove('visible');
-}
-
-function bindRest() {
-  $('caliRestSkip').addEventListener('click', hideRest);
-  $('caliRestPlus').addEventListener('click', () => {
-    rest.endsAt += 15000;
-    rest.total += 15;
-    tickRest();
-  });
-  $('caliRestMinus').addEventListener('click', () => {
-    rest.endsAt = Math.max(Date.now(), rest.endsAt - 15000);
-    rest.total = Math.max(15, rest.total - 15);
-    tickRest();
-  });
-  document.querySelectorAll('.cali-preset').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const seconds = Number(btn.dataset.time);
-      store.setRestSeconds(state.mode, seconds);
-      if (rest.stepId) localStorage.setItem(STEP_REST_PREFIX + rest.stepId, String(seconds));
-      startRest(seconds);
-    });
+  const mode = state.mode;
+  startRest({
+    key: `cali:rest:step:${step.id}`,
+    label: step.name,
+    fallback: store.getRestSeconds(mode),
+    onPreset: seconds => store.setRestSeconds(mode, seconds)
   });
 }
 
+// Relógio do treino; enquanto o treino está em andamento a tela fica acesa,
+// como na academia.
 function paintClock() {
+  const finished = store.isDayFinished(state.mode, todayString());
   const el = $('caliClock');
-  if (el) el.textContent = clockText(state.today, store.isDayFinished(state.mode, todayString()));
+  if (el) el.textContent = clockText(state.today, finished);
+  setAwake('cali-session', isSessionLive(state.today, finished));
 }
 
 function startClock() {
   stopClock();
+  paintClock();
   clockHandle = setInterval(paintClock, 1000);
 }
 
 function stopClock() {
   if (clockHandle) clearInterval(clockHandle);
   clockHandle = null;
+  setAwake('cali-session', false);
 }
 
 function init() {
   if (!root) return;
   initPanels({ getMode: () => state.mode, onDataChanged: () => render() });
-  bindRest();
   document.querySelectorAll('#modeSwitch .mode-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       if (btn.dataset.mode !== currentBodyMode()) applyMode(btn.dataset.mode, true);
@@ -755,12 +831,20 @@ function init() {
   $('caliStatsBtn').addEventListener('click', () => openProgress(state.mode));
   $('mobiCalendarBtn').addEventListener('click', () => openCalendar(state.mode));
   $('mobiStatsBtn').addEventListener('click', () => openProgress(state.mode));
-  document.addEventListener('keydown', e => {
-    if (e.key === 'Escape') hideRest();
-  });
   const initialMode = store.getMode();
   state.mode = initialMode === 'mobi' ? 'mobi' : 'cali';
   applyMode(initialMode, false);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') refreshIfNewDay();
+  });
+}
+
+// Voltou ao app num outro dia (ficou em segundo plano de um dia para o outro):
+// redesenha, senão continuavam as séries e o relógio da véspera.
+function refreshIfNewDay() {
+  if (!['cali', 'mobi'].includes(currentBodyMode()) || state.renderedDate === todayString()) return;
+  state.openStepId = null;
+  render();
 }
 
 init();

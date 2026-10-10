@@ -5,7 +5,7 @@
   --card-border: rgba(255, 255, 255, 0.08);
   --text: #f4f4f2;
   --text-dim: #a8afb5;
-  --text-faint: #767d83;
+  --text-faint: #80878d;
   --accent: #ccff33;
   --accent-dim: #8fb824;
   --danger: #ff5a5f;
@@ -130,7 +130,7 @@ h1 span { color: var(--accent); }
 .set-dot.filled { background: var(--accent); border-color: var(--accent); color: #0f1113; }
 
 .input-row { display: flex; gap: 16px; margin-bottom: 20px; }
-.input-group { flex: 1; }
+.input-group { flex: 1; min-width: 0; }
 .input-group label { display: flex; align-items: center; justify-content: center; font-family: var(--font-mono); font-size: 13px; font-weight: 700; color: var(--text-dim); margin-bottom: 8px; letter-spacing: 0.5px; }
 .input-group input { width: 100%; background: rgba(255, 255, 255, 0.03); border: 1px solid var(--card-border); color: var(--text); padding: 18px; border-radius: 14px; text-align: center; font-size: 26px; font-family: var(--font-mono); font-weight: 700; }
 .input-group input:focus { outline: none; border-color: var(--accent); }
@@ -181,3 +181,23 @@ h1 span { color: var(--accent); }
 /* Card pulado: botão visível para trazer o exercício de volta, sem abrir o card. */
 .unskip-chip { background: rgba(var(--accent-rgb), 0.12); color: var(--accent); border: 1px solid var(--accent-dim); border-radius: 999px; padding: 4px 10px; font-family: var(--font-body); font-size: 12px; font-weight: 700; cursor: pointer; }
 .unskip-chip:active { transform: scale(0.96); }
+
+/* Registrar com campo vazio: o campo que falta treme e fica vermelho. */
+.input-group input.input-missing { border-color: var(--danger); animation: inputShake 0.35s ease; }
+@keyframes inputShake { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-6px); } 75% { transform: translateX(6px); } }
+@media (prefers-reduced-motion: reduce) { .input-group input.input-missing { animation: none; } }
+
+/* Celular com notch/barra de gestos (iPhone com barra de status translúcida):
+   o conteúdo não fica mais embaixo do relógio nem da barra inferior. */
+.app { padding-top: calc(20px + env(safe-area-inset-top)); padding-left: max(16px, env(safe-area-inset-left)); padding-right: max(16px, env(safe-area-inset-right)); }
+
+/* Toque rápido na academia: sem seleção de texto acidental nem atraso de toque duplo. */
+html { touch-action: manipulation; }
+button, .tab-btn, .exercise-header, .set-dot { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+
+/* Card aberto rola para ficar visível; com o descanso aberto, sobra espaço embaixo. */
+.exercise-card { scroll-margin-top: 12px; scroll-margin-bottom: 16px; }
+body:has(.rest-overlay.visible) .exercise-card { scroll-margin-bottom: 210px; }
+
+/* Card concluído: "Série extra" em tom secundário (o card continua com cara de feito). */
+.save-btn.extra-set-btn { background: rgba(var(--accent-rgb), 0.1); color: var(--accent); border: 1px solid var(--accent-dim); }

@@ -33,9 +33,12 @@ export function showSummaryModal({ stats, prs = [], onShare }) {
   modal.classList.add('visible');
 }
 
-// Data do treino por extenso: "Sábado, 26 de setembro".
+// Data do treino por extenso: "Sábado, 26 de setembro" (com o ano quando não é
+// o ano atual: "Sábado, 26 de setembro de 2025").
 export function longDateLabel(dateStr) {
-  const label = new Date(dateStr + 'T12:00:00').toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' });
+  const date = new Date(dateStr + 'T12:00:00');
+  const withYear = date.getFullYear() !== new Date().getFullYear();
+  const label = date.toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long', ...(withYear ? { year: 'numeric' } : {}) });
   return label.charAt(0).toUpperCase() + label.slice(1);
 }
 

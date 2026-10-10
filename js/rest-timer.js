@@ -1,16 +1,20 @@
-// Cronômetro de descanso entre séries: contagem regressiva, barra de progresso e o
+// Cronômetro de descanso entre séries — um só para academia, calistenia e
+// mobilidade (antes cada modo tinha o seu painel, e os dois podiam aparecer
+// empilhados ao trocar de modo). Contagem regressiva, anel de progresso e o
 // alerta de fim de descanso (som + vibração + notificação do sistema).
 
 const restOverlay = document.getElementById('restOverlay');
 const restTimeEl = document.getElementById('restTime');
 const restProgressEl = document.getElementById('restProgress');
+const restTagEl = restOverlay.querySelector('.rest-tag');
 
-let restSecondsCurrent = 90;
-let restInterval = null;
-let restRemaining = restSecondsCurrent;
+let lastBaseSeconds = 90;   // último tempo escolhido (vale quando o exercício não tem um salvo)
+let totalSeconds = 90;      // total do descanso atual, para o anel (+15s aumenta)
 let restEndTimestamp = null;
+let restInterval = null;
 let restEndAlertFired = false;
 let restAudioCtx = null;
+let current = { key: null, onPreset: null };
 
 // Cria (ou acorda) o AudioContext dentro do gesto de clique que inicia o
 // descanso, pra já ficar liberado pra tocar sozinho quando o tempo acabar.
@@ -66,104 +70,114 @@ function fireRestEndNotification() {
   }
 }
 
-// Chamado dentro do clique que inicia um descanso (academia ou calistenia),
-// pra liberar o áudio e pedir permissão de notificação.
-export function primeRestAlert() {
-  ensureRestAudioContext();
-  maybeRequestNotificationPermission();
-}
-
-export function alertRestEnd() {
+function alertRestEnd() {
   playRestEndChime();
   if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
   if (document.hidden) fireRestEndNotification();
 }
 
-function handleRestEnd() {
+function remainingSeconds() {
+  return Math.max(0, Math.round((restEndTimestamp - Date.now()) / 1000));
+}
+
+function updateRestDisplay() {
+  const remaining = remainingSeconds();
+  const m = Math.floor(remaining / 60);
+  const s = remaining % 60;
+  restTimeEl.textContent = `${m}:${String(s).padStart(2, '0')}`;
+  restProgressEl.style.setProperty('--p', Math.max(0, Math.min(remaining / totalSeconds, 1)));
+}
+
+function finishRest() {
+  clearInterval(restInterval);
+  restInterval = null;
+  restOverlay.classList.remove('visible');
   if (restEndAlertFired) return;
   restEndAlertFired = true;
   alertRestEnd();
 }
 
-export function startRest(seconds) {
-  restSecondsCurrent = seconds;
-  restRemaining = seconds;
-  restEndTimestamp = Date.now() + seconds * 1000;
-  restEndAlertFired = false;
-  primeRestAlert();
-  restOverlay.classList.add('visible');
+function tick() {
+  if (remainingSeconds() <= 0) {
+    restTimeEl.textContent = '0:00';
+    restProgressEl.style.setProperty('--p', 0);
+    finishRest();
+    return;
+  }
   updateRestDisplay();
-  clearInterval(restInterval);
-  document.querySelectorAll('.preset-btn').forEach(btn => { btn.classList.toggle('active', parseInt(btn.dataset.time, 10) === seconds); });
-  restInterval = setInterval(() => {
-    const remaining = Math.max(0, Math.round((restEndTimestamp - Date.now()) / 1000));
-    if (remaining <= 0) {
-      clearInterval(restInterval);
-      restRemaining = 0;
-      updateRestDisplay();
-      restOverlay.classList.remove('visible');
-      handleRestEnd();
-      return;
-    }
-    restRemaining = remaining;
-    updateRestDisplay();
-  }, 250);
 }
 
-// Descanso por exercício: o tempo escolhido nos atalhos (1m, 1.5m…) fica salvo
-// para aquele exercício; sem escolha salva, usa o último tempo usado.
-const REST_EXERCISE_PREFIX = 'rest:ex:';
-let restExercise = null;
-const restTagEl = restOverlay.querySelector('.rest-tag');
+function run(seconds) {
+  lastBaseSeconds = seconds;
+  totalSeconds = seconds;
+  restEndTimestamp = Date.now() + seconds * 1000;
+  restEndAlertFired = false;
+  ensureRestAudioContext();
+  maybeRequestNotificationPermission();
+  restOverlay.classList.add('visible');
+  restOverlay.querySelectorAll('.preset-btn').forEach(btn => {
+    btn.classList.toggle('active', Number(btn.dataset.time) === seconds);
+  });
+  updateRestDisplay();
+  clearInterval(restInterval);
+  restInterval = setInterval(tick, 250);
+}
 
+// Outros cronômetros (regressivo da mobilidade) usam o mesmo bipe: primeAlert()
+// no toque que inicia (libera o som), alertTimerEnd() quando acaba.
+export function primeAlert() {
+  ensureRestAudioContext();
+}
+
+export function alertTimerEnd() {
+  playRestEndChime();
+  if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+}
+
+// Inicia um descanso. O tempo escolhido nos atalhos (1m, 1.5m…) fica salvo em
+// `key` (por exercício); sem valor salvo, usa `fallback` ou o último tempo usado.
+// onPreset(segundos): chamado quando um atalho é escolhido (ex.: padrão do modo).
+export function startRest({ key = null, label = '', fallback = 0, onPreset = null } = {}) {
+  current = { key, onPreset };
+  restTagEl.textContent = label ? `Descanso · ${label}` : 'Descanso';
+  const saved = key ? Number(localStorage.getItem(key)) : 0;
+  run(saved > 0 ? saved : fallback > 0 ? fallback : lastBaseSeconds);
+}
+
+// Descanso de um exercício da academia.
 export function startRestFor(exercise) {
-  restExercise = exercise;
-  const saved = Number(localStorage.getItem(REST_EXERCISE_PREFIX + exercise));
-  restTagEl.textContent = `Descanso · ${exercise}`;
-  startRest(saved > 0 ? saved : restSecondsCurrent);
+  startRest({ key: `rest:ex:${exercise}`, label: exercise });
 }
 
 export function closeRestOverlay() {
   clearInterval(restInterval);
+  restInterval = null;
   restOverlay.classList.remove('visible');
-}
-
-function updateRestDisplay() {
-  const m = Math.floor(restRemaining / 60);
-  const s = restRemaining % 60;
-  restTimeEl.textContent = `${m}:${String(s).padStart(2, '0')}`;
-  restProgressEl.style.setProperty('--p', Math.max(0, Math.min(restRemaining / restSecondsCurrent, 1)));
 }
 
 export function initRestTimer() {
   document.getElementById('restSkip').addEventListener('click', closeRestOverlay);
   document.getElementById('restPlus15').addEventListener('click', () => {
     restEndTimestamp += 15000;
-    restSecondsCurrent += 15;
-    restRemaining = Math.max(0, Math.round((restEndTimestamp - Date.now()) / 1000));
+    totalSeconds += 15;
     updateRestDisplay();
   });
   document.getElementById('restMinus15').addEventListener('click', () => {
     restEndTimestamp = Math.max(Date.now(), restEndTimestamp - 15000);
-    restRemaining = Math.max(0, Math.round((restEndTimestamp - Date.now()) / 1000));
-    updateRestDisplay();
+    tick();
   });
-  document.querySelectorAll('.preset-btn').forEach(btn => {
+  restOverlay.querySelectorAll('.preset-btn').forEach(btn => {
     btn.addEventListener('click', () => {
-      const seconds = parseInt(btn.dataset.time, 10);
-      if (restExercise) localStorage.setItem(REST_EXERCISE_PREFIX + restExercise, String(seconds));
-      startRest(seconds);
+      const seconds = Number(btn.dataset.time);
+      if (current.key) localStorage.setItem(current.key, String(seconds));
+      if (current.onPreset) current.onPreset(seconds);
+      run(seconds);
     });
   });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeRestOverlay(); });
+  // De volta ao app depois do fim do descanso: fecha e avisa na hora, em vez de
+  // esperar o próximo "tick" (que o navegador atrasa em segundo plano).
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden && restEndTimestamp && restOverlay.classList.contains('visible')) {
-      restRemaining = Math.max(0, Math.round((restEndTimestamp - Date.now()) / 1000));
-      updateRestDisplay();
-      if (restRemaining <= 0) {
-        clearInterval(restInterval);
-        restOverlay.classList.remove('visible');
-        handleRestEnd();
-      }
-    }
+    if (!document.hidden && restInterval) tick();
   });
 }

@@ -1,4 +1,5 @@
 import { fmtValue } from './calisthenics-data.js';
+import { niceTicks } from './utils.js';
 
 export function metricValue(session, metric) {
   return metric === 'total' ? session.total : session.best;
@@ -31,8 +32,11 @@ function formatDateBR(dateStr) {
   return `${d}/${m}/${y}`;
 }
 
-export function buildEvolutionChart(sessions, step, metric) {
-  const W = 600, H = 226, PAD_TOP = 34, PAD_BOTTOM = 36, PAD_LEFT = 42, PAD_RIGHT = 18;
+// record: melhor valor de todo o histórico. Só o ponto que o alcança ganha o
+// destaque de recorde (antes o melhor ponto do período escolhido virava "Recorde").
+export function buildEvolutionChart(sessions, step, metric, record = 0) {
+  // Desenhado no tamanho real do celular (antes 600 de largura, encolhia pela metade).
+  const W = 340, H = 190, PAD_TOP = 24, PAD_BOTTOM = 26, PAD_LEFT = 34, PAD_RIGHT = 18;
   const innerH = H - PAD_TOP - PAD_BOTTOM;
   const innerW = W - PAD_LEFT - PAD_RIGHT;
 
@@ -67,42 +71,42 @@ export function buildEvolutionChart(sessions, step, metric) {
   points.forEach((p, i) => {
     if (p.value > points[prIndex].value) prIndex = i;
   });
+  if (points[prIndex].value < record) prIndex = -1;
 
   let grid = '';
-  for (let g = 0; g <= 3; g++) {
-    const v = min + (max - min) * (g / 3);
+  niceTicks(min, max, { minStep: 1 }).forEach(v => {
     const y = yFor(v);
     grid += `<line x1="${PAD_LEFT}" y1="${y.toFixed(1)}" x2="${W - PAD_RIGHT}" y2="${y.toFixed(1)}" stroke="rgba(255,255,255,0.05)" stroke-width="1" />`;
-    grid += `<text x="${(PAD_LEFT - 8).toFixed(1)}" y="${(y + 3).toFixed(1)}" text-anchor="end" font-family="var(--font-mono)" font-size="9" fill="var(--text-faint)">${Math.round(v)}</text>`;
-  }
+    grid += `<text x="${(PAD_LEFT - 6).toFixed(1)}" y="${(y + 3).toFixed(1)}" text-anchor="end" font-family="var(--font-mono)" font-size="10" fill="var(--text-faint)">${v}</text>`;
+  });
 
   let goalLine = '';
   if (showGoal) {
     const gy = yFor(goal);
     goalLine = `<line x1="${PAD_LEFT}" y1="${gy.toFixed(1)}" x2="${W - PAD_RIGHT}" y2="${gy.toFixed(1)}" stroke="var(--accent)" stroke-width="1" stroke-dasharray="4,5" opacity="0.5" />
-      <text x="${PAD_LEFT + 6}" y="${(gy - 5).toFixed(1)}" text-anchor="start" font-family="var(--font-mono)" font-size="9" font-weight="700" fill="var(--accent)" opacity="0.75">meta</text>`;
+      <text x="${PAD_LEFT + 6}" y="${(gy - 5).toFixed(1)}" text-anchor="start" font-family="var(--font-mono)" font-size="10" font-weight="700" fill="var(--accent)" opacity="0.75">meta</text>`;
   }
 
   const linePath = smoothPath(points.map(p => ({ x: p.x, y: yFor(p.value) })));
   const baseY = H - PAD_BOTTOM + 10;
   const areaPath = points.length > 1 ? `${linePath} L ${points[points.length - 1].x.toFixed(1)},${baseY} L ${points[0].x.toFixed(1)},${baseY} Z` : '';
 
-  const labelStep = Math.max(1, Math.ceil(points.length / 6));
+  const labelStep = Math.max(1, Math.ceil(points.length / 5));
   let dots = '';
   let labels = '';
   points.forEach((p, idx) => {
     const y = yFor(p.value);
     const isPR = idx === prIndex;
-    const r = isPR ? 6 : 3.5;
+    const r = isPR ? 5.5 : 3.5;
     dots += `<g class="evo-point" data-idx="${idx}" tabindex="0" role="button" aria-label="${formatDateBR(p.date)}: ${fmtValue(step, p.value)}">
-      <circle class="evo-point-halo" cx="${p.x.toFixed(1)}" cy="${y.toFixed(1)}" r="15" fill="transparent" />
-      <circle class="evo-point-ring" cx="${p.x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r + 6}" fill="none" stroke="var(--accent)" stroke-width="1.5" opacity="0" />
+      <circle class="evo-point-halo" cx="${p.x.toFixed(1)}" cy="${y.toFixed(1)}" r="13" fill="transparent" />
+      <circle class="evo-point-ring" cx="${p.x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r + 5}" fill="none" stroke="var(--accent)" stroke-width="1.5" opacity="0" />
       <circle class="evo-point-dot" cx="${p.x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}" fill="${isPR ? 'var(--accent)' : 'var(--bg)'}" stroke="var(--accent)" stroke-width="${isPR ? 0 : 2}" />
-      ${isPR ? `<text x="${p.x.toFixed(1)}" y="${(y - 14).toFixed(1)}" text-anchor="middle" font-family="var(--font-mono)" font-weight="700" font-size="11" fill="var(--accent)">${p.value}</text>` : ''}
+      ${isPR ? `<text x="${p.x.toFixed(1)}" y="${(y - 11).toFixed(1)}" text-anchor="middle" font-family="var(--font-mono)" font-weight="700" font-size="11" fill="var(--accent)">${p.value}</text>` : ''}
     </g>`;
     if (idx % labelStep === 0 || idx === points.length - 1) {
       const [, m, d] = p.date.split('-');
-      labels += `<text x="${p.x.toFixed(1)}" y="${H - 8}" text-anchor="middle" font-family="var(--font-mono)" font-weight="600" font-size="11" fill="var(--text-dim)">${d}/${m}</text>`;
+      labels += `<text x="${p.x.toFixed(1)}" y="${H - 6}" text-anchor="middle" font-family="var(--font-mono)" font-weight="600" font-size="10" fill="var(--text-dim)">${d}/${m}</text>`;
     }
   });
 

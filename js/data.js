@@ -1,6 +1,7 @@
-import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-import { initializeFirestore, persistentLocalCache, doc, setDoc, getDoc, Bytes } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
-
+// Firebase só é carregado na hora do primeiro backup: antes, o import no topo
+// fazia o app inteiro depender de baixar o Firebase para abrir (sem internet e
+// sem o arquivo em cache, nada funcionava).
+const FIREBASE_VERSION = '10.12.0';
 const firebaseConfig = {
   apiKey: "AIzaSyDCCFIgHfNM7mZ3dMDbEkNPBVnDB0HW7vE",
   authDomain: "treino-d6ddf.firebaseapp.com",
@@ -11,14 +12,38 @@ const firebaseConfig = {
   measurementId: "G-RSJREM8Z47"
 };
 
-const app = initializeApp(firebaseConfig);
-export const dbFirestore = initializeFirestore(app, {
-  localCache: persistentLocalCache()
-});
+let firestorePromise = null;
+function loadFirestore() {
+  // Servidor de teste (.claude/serve.js ... test): sem nuvem, para os testes não
+  // gravarem backups de mentira no Firestore.
+  if (self.TREINO_NO_CLOUD) return Promise.reject(new Error('Nuvem desligada (teste)'));
+  if (!firestorePromise) {
+    const base = `https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}`;
+    firestorePromise = Promise.all([
+      import(`${base}/firebase-app.js`),
+      import(`${base}/firebase-firestore.js`)
+    ]).then(([{ initializeApp }, fs]) => {
+      const app = initializeApp(firebaseConfig);
+      const db = fs.initializeFirestore(app, { localCache: fs.persistentLocalCache() });
+      return { db, doc: fs.doc, setDoc: fs.setDoc, getDoc: fs.getDoc, Bytes: fs.Bytes };
+    }).catch(e => {
+      firestorePromise = null; // sem internet agora: tenta de novo no próximo backup
+      throw e;
+    });
+  }
+  return firestorePromise;
+}
+
+// Código de 6 caracteres sem letras/números parecidos (0/O, 1/I/L).
+const SYNC_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+function newSyncId() {
+  const bytes = crypto.getRandomValues(new Uint8Array(6));
+  return Array.from(bytes, b => SYNC_ALPHABET[b % SYNC_ALPHABET.length]).join('');
+}
 
 export let syncId = localStorage.getItem('syncId');
 if (!syncId) {
-  syncId = Math.random().toString(36).substring(2, 8).toUpperCase();
+  syncId = newSyncId();
   localStorage.setItem('syncId', syncId);
 }
 
@@ -28,12 +53,15 @@ export function setSyncId(newId) {
 
 export let lastSyncAt = Number(localStorage.getItem('lastSyncAt')) || null;
 
+// Chaves que só fazem sentido neste aparelho (não vão para o backup).
+const DEVICE_ONLY_KEYS = new Set(['sync:pending']);
+
 // Cópia de todo o localStorage, usada no backup da nuvem e no arquivo.
 export function snapshotLocalData() {
   const data = {};
   for (let i = 0; i < localStorage.length; i++) {
     const key = localStorage.key(i);
-    data[key] = localStorage.getItem(key);
+    if (!DEVICE_ONLY_KEYS.has(key)) data[key] = localStorage.getItem(key);
   }
   return data;
 }
@@ -54,6 +82,7 @@ async function gunzip(bytes) {
 const FIRESTORE_DOC_LIMIT = 1000000;
 
 export async function syncToCloud() {
+  const { db, doc, setDoc, Bytes } = await loadFirestore();
   const data = snapshotLocalData();
   let payload = data;
   if (typeof CompressionStream !== 'undefined') {
@@ -61,7 +90,7 @@ export async function syncToCloud() {
     if (bytes.length > FIRESTORE_DOC_LIMIT) throw new Error(`Backup grande demais (${bytes.length} bytes)`);
     payload = { v: 2, enc: 'gzip', data: Bytes.fromUint8Array(bytes), updatedAt: Date.now() };
   }
-  await setDoc(doc(dbFirestore, "users", syncId), payload);
+  await setDoc(doc(db, "users", syncId), payload);
   lastSyncAt = Date.now();
   localStorage.setItem('lastSyncAt', String(lastSyncAt));
   return true;
@@ -69,7 +98,8 @@ export async function syncToCloud() {
 
 // Lê o backup de um código. Retorna o objeto chave -> valor, ou null se não existir.
 export async function fetchCloudBackup(code) {
-  const snap = await getDoc(doc(dbFirestore, "users", code));
+  const { db, doc, getDoc } = await loadFirestore();
+  const snap = await getDoc(doc(db, "users", code));
   if (!snap.exists()) return null;
   const raw = snap.data();
   if (raw.v === 2 && raw.enc === 'gzip') return JSON.parse(await gunzip(raw.data.toUint8Array()));

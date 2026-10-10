@@ -1,4 +1,4 @@
-import { todayString, pad2, dateStrFromDate, getWeekStart, getWeekEnd } from './utils.js';
+import { todayString, pad2, getWeekStart, getWeekEnd, readListCached } from './utils.js';
 import { trySync } from './sync.js';
 import { MODE_STEP_LIST } from './calisthenics-data.js';
 
@@ -72,35 +72,41 @@ export function deleteDay(mode, date) {
   (MODE_STEP_LIST[mode] || []).forEach(step => {
     const log = loadLog(step.id);
     const kept = log.filter(e => e.d !== date);
-    if (kept.length !== log.length) localStorage.setItem(logKey(step.id), JSON.stringify(kept));
+    if (kept.length !== log.length) saveLog(step.id, kept);
   });
   localStorage.removeItem(`${FINISHED_KEY_PREFIX}${mode}:${date}`);
   trySync();
 }
 
-export function loadLog(stepId) {
-  const list = readJSON(logKey(stepId), []);
-  if (!Array.isArray(list)) return [];
+// Lido com cache (utils.readListCached): os itens voltam congelados.
+function buildLog(list) {
   return list
     .filter(e => e && typeof e.v === 'number' && e.v > 0 && typeof e.d === 'string')
     .map(e => ({ d: e.d, v: e.v, n: typeof e.n === 'string' ? e.n : '', t: Number(e.t) || 0 }));
+}
+
+export function loadLog(stepId) {
+  return readListCached(logKey(stepId), buildLog);
+}
+
+// Grava sem a observação quando ela está vazia (a leitura devolve '').
+function saveLog(stepId, log) {
+  localStorage.setItem(logKey(stepId), JSON.stringify(log.map(e => (e.n ? e : { d: e.d, v: e.v, t: e.t }))));
 }
 
 export function addSet(stepId, value, note) {
   const log = loadLog(stepId);
   const entry = { d: todayString(), v: value, n: note || '', t: Date.now() };
   log.push(entry);
-  localStorage.setItem(logKey(stepId), JSON.stringify(log));
+  saveLog(stepId, log);
   trySync();
   return entry;
 }
 
 export function updateSet(stepId, t, value) {
   const log = loadLog(stepId);
-  const entry = log.find(e => e.t === t);
-  if (!entry) return;
-  entry.v = value;
-  localStorage.setItem(logKey(stepId), JSON.stringify(log));
+  if (!log.some(e => e.t === t)) return;
+  saveLog(stepId, log.map(e => (e.t === t ? { ...e, v: value } : e)));
   trySync();
 }
 
@@ -109,7 +115,7 @@ export function removeSet(stepId, t) {
   const index = log.findIndex(e => e.t === t);
   if (index === -1) return;
   log.splice(index, 1);
-  localStorage.setItem(logKey(stepId), JSON.stringify(log));
+  saveLog(stepId, log);
   trySync();
 }
 
@@ -209,18 +215,6 @@ export function getDayDetail(mode, date) {
   return items.sort((a, b) => a.sets[0].t - b.sets[0].t);
 }
 
-export function buildMonthCells(year, month, index) {
-  const startWeekday = new Date(year, month, 1).getDay();
-  const total = new Date(year, month + 1, 0).getDate();
-  const today = todayString();
-  const cells = [];
-  for (let i = 0; i < startWeekday; i++) cells.push(null);
-  for (let d = 1; d <= total; d++) {
-    const dateStr = dateStrFromDate(new Date(year, month, d));
-    cells.push({ day: d, dateStr, data: index.get(dateStr) || null, isToday: dateStr === today, isFuture: dateStr > today });
-  }
-  return cells;
-}
 
 export function summarizeMonth(year, month, index) {
   const prefix = `${year}-${pad2(month + 1)}-`;

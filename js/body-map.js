@@ -80,6 +80,8 @@ const REGIONS = {
   'Panturrilha': ['calves', 'left-soleus', 'right-soleus'],
   'Tornozelos': ['left-soleus', 'right-soleus']
 };
+// Nomes que o mapa sabe desenhar (os testes conferem os músculos de cada exercício).
+export const REGION_NAMES = Object.keys(REGIONS);
 
 const VIEWS = [
   { parts: ANTERIOR, label: 'Frente' },

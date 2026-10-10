@@ -13,12 +13,13 @@ import {
 import * as store from './calisthenics-store.js';
 import { buildEvolutionChart, buildSparkline, metricValue } from './calisthenics-charts.js';
 import { poseSvgs } from './calisthenics-poses.js';
-import { formatDateBR, formatDateShortBR, todayString, dateStrFromDate, emptyStateHtml, dayColorsBackground } from './utils.js';
+import { formatDateBR, formatDateShortBR, todayString, monthsAgo, emptyStateHtml } from './utils.js';
+import { monthCalendarHtml, monthNavHtml, calendarLegendHtml, calendarStatsHtml, yearSummaryHtml, bindMonthCalendar } from './calendar.js';
 import { musclesHtml } from './body-map.js';
 import { confirmDialog } from './dialog.js';
+import { longDateLabel } from './summary.js';
+import { enableSheetDrag } from './sheet-drag.js';
 
-const MONTHS = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
-const WEEKDAYS = ['D', 'S', 'T', 'Q', 'Q', 'S', 'S'];
 const RANGES = [
   { label: '1M', months: 1 },
   { label: '3M', months: 3 },
@@ -49,8 +50,13 @@ function skillsOfDay(day) {
 
 function fmtDelta(step, diff) {
   const sign = diff > 0 ? '+' : diff < 0 ? '-' : '';
+  return `${sign}${fmtAmount(step, diff)}`;
+}
+
+// Diferença sem sinal, para usar junto da seta ("↓ 1 rep", não "↓ -1 rep").
+function fmtAmount(step, diff) {
   const abs = Math.abs(diff);
-  return step.mode === 'time' ? `${sign}${fmtSeconds(abs)}` : `${sign}${abs} ${abs === 1 ? 'rep' : 'reps'}`;
+  return step.mode === 'time' ? fmtSeconds(abs) : `${abs} ${abs === 1 ? 'rep' : 'reps'}`;
 }
 
 // Evolução do passo no dia, no mesmo formato do calendário da academia.
@@ -61,7 +67,7 @@ function dayTrendHtml(item, date) {
   const last = previous[previous.length - 1];
   const diff = item.best - sessionStats(last).best;
   const dir = diff > 0 ? 'up' : diff < 0 ? 'down' : 'same';
-  const text = dir === 'same' ? '= igual' : `${dir === 'up' ? '↑' : '↓'} ${fmtDelta(item.step, diff)}`;
+  const text = dir === 'same' ? '= igual' : `${dir === 'up' ? '↑' : '↓'} ${fmtAmount(item.step, diff)}`;
   return `<span class="day-trend ${dir}">${text} <span class="day-trend-vs">vs ${formatDateShortBR(last.date)}</span></span>`;
 }
 
@@ -77,8 +83,8 @@ export function sessionRowHtml(step, session, previous, metric = 'best') {
   if (previous) {
     const prev = sessionStats(previous);
     const diff = metric === 'total' ? stats.total - prev.total : stats.best - prev.best;
-    if (diff > 0) trend = `<span class="evo-session-trend up">↑ ${fmtDelta(step, diff)} vs treino anterior</span>`;
-    else if (diff < 0) trend = `<span class="evo-session-trend down">↓ ${fmtDelta(step, diff)} vs treino anterior</span>`;
+    if (diff > 0) trend = `<span class="evo-session-trend up">↑ ${fmtAmount(step, diff)} vs treino anterior</span>`;
+    else if (diff < 0) trend = `<span class="evo-session-trend down">↓ ${fmtAmount(step, diff)} vs treino anterior</span>`;
     else trend = '<span class="evo-session-trend">= igual ao treino anterior</span>';
   }
   const chips = session.sets
@@ -103,64 +109,28 @@ function renderCalendar() {
   base.setMonth(base.getMonth() + monthOffset);
   const year = base.getFullYear();
   const month = base.getMonth();
-  const cells = store.buildMonthCells(year, month, index);
   const summary = store.summarizeMonth(year, month, index);
-  const isCurrent = monthOffset === 0;
-
-  const grid = cells
-    .map(cell => {
-      if (!cell) return '<div class="cali-cal-cell empty"></div>';
-      const classes = ['cali-cal-cell'];
-      if (cell.isToday) classes.push('today');
-      if (cell.isFuture) classes.push('future');
-      if (!cell.data) return `<div class="${classes.join(' ')} lvl-0"><span>${cell.day}</span></div>`;
-      // Cor do treino feito (dividida quando houve mais de um), como na academia.
-      const skills = skillsOfDay(cell.data);
-      classes.push('trained');
-      return `<button type="button" class="${classes.join(' ')}" style="background: ${dayColorsBackground(skills.map(s => s.color))}" data-date="${cell.dateStr}" aria-label="${formatDateBR(cell.dateStr)}: ${skills.map(s => s.name).join(' e ')}, ${cell.data.sets} séries">
-        <span>${cell.day}</span>
-      </button>`;
-    })
-    .join('');
+  let yearDays = 0;
+  const calDays = new Map();
+  index.forEach((day, date) => {
+    if (date.startsWith(`${year}-`)) yearDays += 1;
+    // Cor do treino feito (anel dividido quando houve mais de um), como na academia.
+    const skills = skillsOfDay(day);
+    calDays.set(date, { colors: skills.map(s => s.color), label: `${skills.map(s => s.name).join(' e ')}, ${day.sets} séries` });
+  });
 
   $('caliCalendarContent').innerHTML = `
-    <div class="cali-kpis three">
-      <div class="cali-kpi"><b>${summary.days}</b><span>Dias treinados</span></div>
-      <div class="cali-kpi"><b>${summary.sets}</b><span>Séries</span></div>
-      ${summary.holdSeconds > 0
-        ? `<div class="cali-kpi"><b>${fmtSeconds(summary.holdSeconds)}</b><span>Sob tensão</span></div>`
-        : `<div class="cali-kpi"><b>${summary.reps}</b><span>Repetições</span></div>`}
-    </div>
-    <div class="cali-cal-nav">
-      <button type="button" class="cal-nav-btn" id="caliCalPrev" aria-label="Mês anterior">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg>
-      </button>
-      <span class="cali-cal-title">${MONTHS[month]} ${year}</span>
-      <button type="button" class="cal-nav-btn" id="caliCalNext" aria-label="Próximo mês" ${isCurrent ? 'disabled' : ''}>
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
-      </button>
-    </div>
-    <div class="cali-cal-card">
-      <div class="cali-cal-labels">${WEEKDAYS.map(l => `<span>${l}</span>`).join('')}</div>
-      <div class="cali-cal-grid">${grid}</div>
-    </div>
-    <div class="cal-legend">
-      ${(MODE_SKILLS[panelMode] || []).map(s => `<span class="cal-legend-item"><span class="cal-legend-swatch" style="background: ${s.color}"></span>${s.short || s.name}</span>`).join('')}
-    </div>`;
-
-  $('caliCalendarContent').querySelectorAll('.cali-cal-cell[data-date]').forEach(el => {
-    el.addEventListener('click', () => openDay(panelMode, el.dataset.date));
-  });
-  $('caliCalPrev').addEventListener('click', () => {
-    monthOffset -= 1;
-    renderCalendar();
-  });
-  $('caliCalNext').addEventListener('click', () => {
-    if (monthOffset < 0) {
-      monthOffset += 1;
-      renderCalendar();
-    }
-  });
+    ${calendarStatsHtml([
+      { value: summary.days, label: summary.days === 1 ? 'Dia treinado' : 'Dias treinados' },
+      { value: summary.sets, label: 'Séries' },
+      summary.holdSeconds > 0
+        ? { value: fmtSeconds(summary.holdSeconds), label: 'Sob tensão' }
+        : { value: summary.reps, label: 'Repetições' }
+    ])}
+    ${monthNavHtml(year, month, monthOffset === 0)}
+    ${monthCalendarHtml(year, month, calDays)}
+    ${calendarLegendHtml((MODE_SKILLS[panelMode] || []).map(s => ({ color: s.color, label: s.short || s.name })))}
+    ${yearSummaryHtml(year, yearDays)}`;
 }
 
 export function openCalendar(mode) {
@@ -214,7 +184,7 @@ export function openDay(mode, date) {
     })
     .join('');
 
-  $('caliDayTitle').textContent = date === todayString() ? 'Hoje' : formatDateBR(date);
+  $('caliDayTitle').textContent = longDateLabel(date);
   // Regiões de cada exercício feito (um treino de mobilidade mistura regiões).
   const dayMuscles = items.map(item => stepMuscles(item.step)).filter(Boolean);
   const primary = [...new Set(dayMuscles.flatMap(m => m.prim))];
@@ -288,8 +258,8 @@ export function openGuide(stepId) {
 function trendHtml(step, series) {
   if (series.length < 2) return `<span class="cali-trend">${series.length} treino</span>`;
   const diff = series[series.length - 1].best - series[series.length - 2].best;
-  if (diff > 0) return `<span class="cali-trend up">↑ ${fmtDelta(step, diff)}</span>`;
-  if (diff < 0) return `<span class="cali-trend down">↓ ${fmtDelta(step, diff)}</span>`;
+  if (diff > 0) return `<span class="cali-trend up">↑ ${fmtAmount(step, diff)}</span>`;
+  if (diff < 0) return `<span class="cali-trend down">↓ ${fmtAmount(step, diff)}</span>`;
   return '<span class="cali-trend">= igual ao anterior</span>';
 }
 
@@ -430,9 +400,7 @@ function renderEvolutionContent() {
 
   let inRange = series;
   if (Number.isFinite(evoRange)) {
-    const cutoff = new Date(todayString());
-    cutoff.setMonth(cutoff.getMonth() - evoRange);
-    const cutoffStr = dateStrFromDate(cutoff);
+    const cutoffStr = monthsAgo(todayString(), evoRange);
     inRange = series.filter(s => s.date >= cutoffStr);
     if (inRange.length < 2) inRange = series.slice(-Math.min(6, series.length));
   }
@@ -440,7 +408,7 @@ function renderEvolutionContent() {
   let chartHtml;
   let pointsData = [];
   if (series.length >= 2) {
-    const built = buildEvolutionChart(inRange, step, evoMetric);
+    const built = buildEvolutionChart(inRange, step, evoMetric, pr);
     pointsData = built.pointsData;
     const rangeButtons = RANGES.map(r => {
       const active = r.months === Infinity ? !Number.isFinite(evoRange) : evoRange === r.months;
@@ -508,7 +476,7 @@ function renderEvolutionContent() {
         if (p.delta !== null) {
           const cls = p.delta > 0 ? 'up' : p.delta < 0 ? 'down' : '';
           const arrow = p.delta > 0 ? '↑ ' : p.delta < 0 ? '↓ ' : '';
-          deltaHtml = `<div class="cali-tooltip-delta"><span class="cali-trend ${cls}">${p.delta === 0 ? '= igual ao treino anterior' : `${arrow}${fmtDelta(step, p.delta)} vs treino anterior`}</span></div>`;
+          deltaHtml = `<div class="cali-tooltip-delta"><span class="cali-trend ${cls}">${p.delta === 0 ? '= igual ao treino anterior' : `${arrow}${fmtAmount(step, p.delta)} vs treino anterior`}</span></div>`;
         }
         const notes = [...new Set(p.sets.map(s => s.n).filter(Boolean))];
         tooltip.innerHTML = `
@@ -579,10 +547,19 @@ export function closePanels() {
 
 export function initPanels(options) {
   hooks = Object.assign(hooks, options);
+  bindMonthCalendar($('caliCalendarContent'), {
+    onMonth: step => {
+      if (step > 0 && monthOffset >= 0) return;
+      monthOffset += step;
+      renderCalendar();
+    },
+    onDay: date => openDay(panelMode, date)
+  });
   $('closeCaliCalendar').addEventListener('click', () => $('caliCalendarModal').classList.remove('visible'));
   $('closeCaliStats').addEventListener('click', () => $('caliStatsModal').classList.remove('visible'));
   $('closeCaliGuide').addEventListener('click', () => $('caliGuideModal').classList.remove('visible'));
   $('closeCaliDay').addEventListener('click', () => $('caliDayModal').classList.remove('visible'));
+  enableSheetDrag($('caliDayModal').querySelector('.cali-sheet'), () => $('caliDayModal').classList.remove('visible'));
   ['caliGuideModal', 'caliDayModal'].forEach(id => {
     $(id).addEventListener('click', e => {
       if (e.target.id === id) $(id).classList.remove('visible');
