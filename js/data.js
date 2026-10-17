@@ -112,6 +112,13 @@ export const MEDIA_BASE = "https://raw.githubusercontent.com/yuhonas/free-exerci
 export const db = {
   "Agachamento Hack": { cat: "Quadríceps", prim: "Quadríceps", sec: ["Glúteo", "Adutores"], tip: "Desça o máximo sem descolar o calcanhar da base.", img: "Hack_Squat" },
   "Leg Press Horizontal Articulado": { cat: "Quadríceps", prim: "Quadríceps", sec: ["Glúteo", "Adutores"], tip: "Máxima amplitude, não trave os joelhos no topo.", img: "Leg_Press" },
+  // Alternativas ao Hack e ao Leg Press, sem agachamento (o usuário não gosta de
+  // agachar). Entram pelo "Trocar" em Editar Exercícios.
+  "Subida no Banco": { cat: "Quadríceps", prim: "Quadríceps", sec: ["Glúteo"], tip: "Halteres nas mãos, pé inteiro no banco; suba empurrando pelo calcanhar da perna de cima, sem impulso da de baixo. Registre as repetições de uma perna (faça as duas).", img: "Dumbbell_Step_Ups" },
+  "Cadeira Extensora Unilateral": { cat: "Quadríceps", prim: "Quadríceps", sec: [], tip: "Uma perna por vez, pausa de 1s com a perna esticada. Registre as repetições de uma perna (faça as duas).", img: "Single-Leg_Leg_Extension" },
+  "Elevação Pélvica": { cat: "Glúteo", prim: "Glúteo", sec: ["Posterior de Coxa"], tip: "Costas apoiadas no banco, barra (com proteção) no quadril; suba até o tronco ficar reto e aperte o glúteo 1s no topo.", img: "Barbell_Hip_Thrust" },
+  "Stiff com Halteres": { cat: "Posterior de Coxa", prim: "Posterior de Coxa", sec: ["Glúteo", "Lombar"], tip: "Joelhos quase esticados, desça os halteres rente às pernas jogando o quadril para trás, coluna reta.", img: "Stiff-Legged_Dumbbell_Deadlift" },
+  "Glúteo na Polia (Coice)": { cat: "Glúteo", prim: "Glúteo", sec: ["Posterior de Coxa"], tip: "Tornozeleira na polia baixa; leve a perna para trás sem arquear a lombar.", img: "Glute_Kickback" },
   "Cadeira Extensora": { cat: "Quadríceps", prim: "Quadríceps", sec: [], tip: "Pausa de 1s no topo com a perna esticada.", img: "Leg_Extensions" },
   "Cadeira Flexora": { cat: "Posterior de Coxa", prim: "Posterior de Coxa", sec: ["Panturrilha"], tip: "Puxe apertando a perna contra o assento.", img: "Seated_Leg_Curl" },
   "Mesa Flexora": { cat: "Posterior de Coxa", prim: "Posterior de Coxa", sec: ["Panturrilha"], tip: "Quadril colado na mesa durante o movimento.", img: "Lying_Leg_Curls" },
@@ -226,4 +233,26 @@ export function setsFor(day, exercise) {
 export function exercisesEverIn(day) {
   if (!workoutData[day]) return [];
   return [...new Set([...workoutData[day].exercises, ...workoutData[day].retired])];
+}
+
+// Pedido de 2026-10-16: o Agachamento Hack sai do treino de perna (o usuário não
+// gosta de agachar); o Leg Press fica. A Extensora Unilateral (3 séries) entra
+// para manter o volume de quadríceps (9 séries, como antes), depois da Cadeira
+// Flexora: o quadríceps descansa entre as duas extensoras. O Hack vai para `retired`, então o histórico continua no calendário.
+// Roda uma vez por aparelho.
+const LEG_CHANGE_KEY = 'plan:perna-sem-hack';
+if (!localStorage.getItem(LEG_CHANGE_KEY)) {
+  days.forEach(day => {
+    const plan = workoutData[day];
+    if (!plan.exercises.includes('Agachamento Hack')) return;
+    plan.exercises = plan.exercises.filter(ex => ex !== 'Agachamento Hack');
+    if (!plan.retired.includes('Agachamento Hack')) plan.retired.push('Agachamento Hack');
+    const add = 'Cadeira Extensora Unilateral';
+    if (days.some(d => workoutData[d].exercises.includes(add))) return;
+    const after = ['Cadeira Flexora', 'Cadeira Extensora'].map(ex => plan.exercises.indexOf(ex)).find(i => i >= 0);
+    plan.exercises.splice(after >= 0 ? after + 1 : plan.exercises.length, 0, add);
+    plan.retired = plan.retired.filter(ex => ex !== add);
+  });
+  savePlan();
+  localStorage.setItem(LEG_CHANGE_KEY, '1');
 }

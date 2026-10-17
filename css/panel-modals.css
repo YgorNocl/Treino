@@ -304,14 +304,16 @@ body:has(.rest-overlay.visible) .toast-notification.show { bottom: calc(180px + 
 .body-spark svg { width: 100%; height: 100%; display: block; }
 /* Editor do treino (Configurações > Editar Exercícios) */
 .plan-list { display: flex; flex-direction: column; gap: 8px; }
-.plan-row { display: flex; align-items: center; gap: 10px; background: var(--card); border: 1px solid var(--card-border); border-radius: 14px; padding: 10px; }
-.plan-move { display: flex; flex-direction: column; gap: 4px; }
-.plan-name { flex: 1; min-width: 0; font-size: 14px; font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; }
+.plan-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; background: var(--card); border: 1px solid var(--card-border); border-radius: 14px; padding: 10px; }
+.plan-row.swapping { border-color: var(--accent); background: rgba(var(--accent-rgb), 0.06); }
+.plan-swap-cancel { display: block; margin: 10px auto 0; }
+.plan-move { display: flex; gap: 6px; margin-right: auto; }
+.plan-name { order: -1; flex: 1 1 100%; min-width: 0; font-size: 14px; font-weight: 600; line-height: 1.3; overflow-wrap: break-word; padding: 2px 4px 0; }
 .plan-sets { display: flex; align-items: center; gap: 6px; }
 .plan-sets-num { display: flex; flex-direction: column; align-items: center; min-width: 34px; font-family: var(--font-mono); font-size: 16px; font-weight: 700; color: var(--accent); line-height: 1; }
 .plan-sets-num small { font-size: 9px; font-weight: 400; color: var(--text-faint); margin-top: 3px; }
 .plan-icon { width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; background: rgba(255,255,255,0.04); border: 1px solid var(--card-border); border-radius: 10px; color: var(--text); font-size: 18px; font-family: var(--font-mono); cursor: pointer; flex-shrink: 0; }
-.plan-move .plan-icon { width: 28px; height: 22px; border-radius: 7px; }
+.plan-move .plan-icon { width: 34px; height: 30px; border-radius: 8px; }
 .plan-icon:disabled { opacity: 0.25; cursor: default; }
 .plan-icon:active:not(:disabled) { transform: scale(0.94); }
 .plan-remove { color: var(--danger); }

@@ -882,16 +882,29 @@ function removeFromPlan(day, exercise) {
   if (!plan.retired.includes(exercise)) plan.retired.push(exercise);
 }
 
+// planSwap: exercício escolhido em "Trocar". O novo entra no lugar dele (mesma
+// posição e número de séries) e o antigo sai com o histórico guardado.
+let planSwap = null;
 function addToPlan(day, exercise) {
   const plan = workoutData[day];
-  plan.exercises.push(exercise);
+  const idx = plan.exercises.indexOf(planSwap);
+  if (idx >= 0) {
+    const old = planSwap;
+    plan.exercises[idx] = exercise;
+    if (plan.sets[old]) plan.sets[exercise] = plan.sets[old];
+    if (!plan.retired.includes(old)) plan.retired.push(old);
+  } else {
+    plan.exercises.push(exercise);
+  }
+  planSwap = null;
   plan.retired = plan.retired.filter(ex => ex !== exercise);
 }
 
 const planIcon = {
   up: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 15l-6-6-6 6"/></svg>',
   down: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>',
-  remove: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg>'
+  remove: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg>',
+  swap: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M7 4 3 8l4 4"/><path d="M3 8h14"/><path d="m17 20 4-4-4-4"/><path d="M21 16H7"/></svg>'
 };
 
 function renderPlanEditor() {
@@ -902,7 +915,7 @@ function renderPlanEditor() {
   const rows = plan.exercises.map((ex, i) => {
     const n = setsFor(day, ex);
     return `
-      <div class="plan-row" data-idx="${i}">
+      <div class="plan-row ${ex === planSwap ? 'swapping' : ''}" data-idx="${i}">
         <div class="plan-move">
           <button type="button" class="plan-icon" data-act="up" aria-label="Subir" ${i === 0 ? 'disabled' : ''}>${planIcon.up}</button>
           <button type="button" class="plan-icon" data-act="down" aria-label="Descer" ${i === plan.exercises.length - 1 ? 'disabled' : ''}>${planIcon.down}</button>
@@ -913,6 +926,7 @@ function renderPlanEditor() {
           <span class="plan-sets-num">${n}<small>${n === 1 ? 'série' : 'séries'}</small></span>
           <button type="button" class="plan-icon" data-act="more" aria-label="Mais uma série" ${n >= MAX_SETS ? 'disabled' : ''}>+</button>
         </div>
+        <button type="button" class="plan-icon" data-act="swap" aria-label="Trocar ${ex} por outro exercício" aria-pressed="${ex === planSwap}">${planIcon.swap}</button>
         <button type="button" class="plan-icon plan-remove" data-act="remove" aria-label="Tirar do treino">${planIcon.remove}</button>
       </div>`;
   }).join('');
@@ -930,13 +944,14 @@ function renderPlanEditor() {
     <nav class="selectors" style="padding-top:0;">${tabs}</nav>
     <div class="plan-list">${rows || '<p class="plan-empty">Nenhum exercício nesse treino.</p>'}</div>
     <div class="backup-section">
-      <h3>Adicionar exercício</h3>
+      <h3 id="planAddTitle">${planSwap ? `Trocar ${planSwap} por` : 'Adicionar exercício'}</h3>
       <select id="planAddSelect" class="plan-input">${availableHtml}</select>
-      <button type="button" id="planAddBtn" class="save-btn plan-btn" ${Object.keys(available).length === 0 ? 'disabled' : ''}>Adicionar ao ${dayLabel(day)}</button>
+      <button type="button" id="planAddBtn" class="save-btn plan-btn" ${Object.keys(available).length === 0 ? 'disabled' : ''}>${planSwap ? 'Trocar' : `Adicionar ao ${dayLabel(day)}`}</button>
+      ${planSwap ? '<button type="button" id="planSwapCancel" class="set-edit-link plan-swap-cancel">Cancelar troca</button>' : ''}
       <h3>Criar exercício novo</h3>
       <input type="text" id="planNewName" class="plan-input" maxlength="60" placeholder="Nome do exercício">
       <select id="planNewMuscle" class="plan-input">${muscleOptions}</select>
-      <button type="button" id="planNewBtn" class="save-btn plan-btn">Criar e adicionar ao ${dayLabel(day)}</button>
+      <button type="button" id="planNewBtn" class="save-btn plan-btn">${planSwap ? `Criar e trocar por ${planSwap}` : `Criar e adicionar ao ${dayLabel(day)}`}</button>
     </div>`;
 }
 
@@ -960,6 +975,7 @@ function bindPlanEditor() {
   const content = document.getElementById('planModalContent');
   document.getElementById('editPlanBtn').addEventListener('click', () => {
     planEditDay = currentDay;
+    planSwap = null;
     renderPlanEditor();
     modal.classList.add('visible');
   });
@@ -967,7 +983,8 @@ function bindPlanEditor() {
 
   content.addEventListener('click', (e) => {
     const tab = e.target.closest('[data-plan-day]');
-    if (tab) { planEditDay = tab.dataset.planDay; renderPlanEditor(); return; }
+    if (tab) { planEditDay = tab.dataset.planDay; planSwap = null; renderPlanEditor(); return; }
+    if (e.target.closest('#planSwapCancel')) { planSwap = null; renderPlanEditor(); return; }
 
     if (e.target.closest('#planAddBtn')) {
       const ex = document.getElementById('planAddSelect').value;
@@ -990,6 +1007,12 @@ function bindPlanEditor() {
     const idx = Number(btn.closest('.plan-row').dataset.idx);
     const ex = plan.exercises[idx];
     const act = btn.dataset.act;
+    if (act === 'swap') {
+      planSwap = planSwap === ex ? null : ex;
+      renderPlanEditor();
+      if (planSwap) document.getElementById('planAddTitle').scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
     if (act === 'up' || act === 'down') {
       const to = act === 'up' ? idx - 1 : idx + 1;
       [plan.exercises[idx], plan.exercises[to]] = [plan.exercises[to], plan.exercises[idx]];
