@@ -45,6 +45,9 @@ button:focus-visible, input:focus-visible, .exercise-header:focus-visible {
 .topbar-row { display: flex; align-items: center; justify-content: space-between; }
 h1 { font-family: var(--font-display); font-size: 26px; letter-spacing: -0.5px; color: var(--text); }
 h1 span { color: var(--accent); }
+/* Nome de treino comprido ("A · Peito e Tríceps"): fonte menor, sem invadir os botões. */
+h1.long { font-size: 20px; line-height: 1.15; }
+.topbar-row h1 { min-width: 0; overflow-wrap: anywhere; margin-right: 12px; }
 .sheet-header h2 { font-family: var(--font-display); font-size: 20px; color: var(--text); }
 
 .icon-btn { 

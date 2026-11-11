@@ -1,7 +1,7 @@
 {
-  "name": "Meu Treino Premium",
+  "name": "Treino",
   "short_name": "Treino",
-  "description": "Registro de treinos de academia, calistenia, mobilidade e corrida.",
+  "description": "Monte seus treinos de academia, peso do corpo e mobilidade, registre séries e acompanhe a evolução.",
   "lang": "pt-BR",
   "start_url": "./index.html",
   "scope": "./",
@@ -55,8 +55,8 @@
   ],
   "shortcuts": [
     {
-      "name": "Academia",
-      "short_name": "Academia",
+      "name": "Treinos",
+      "short_name": "Treinos",
       "url": "./index.html?mode=gym",
       "icons": [
         {

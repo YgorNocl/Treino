@@ -1,4 +1,11 @@
-import { syncId, setSyncId, fetchCloudBackup, snapshotLocalData, MEDIA_BASE, db, workoutData, days, setsFor, exercisesEverIn, savePlan, addCustomExercise, MUSCLE_CATEGORIES, VOLUME_GROUP } from './data.js';
+import { syncId, setSyncId, fetchCloudBackup, snapshotLocalData, MEDIA_BASE, db, workoutData, days, activeDays, setsFor, exercisesEverIn, savePlan, addCustomExercise, MUSCLE_CATEGORIES, VOLUME_GROUP, MAX_SETS, exerciseType, createWorkout, updateWorkout, deleteWorkout, moveWorkout, WORKOUT_COLORS, formatSyncCode, normalizeSyncCode } from './data.js';
+import { CATALOG_GROUPS, EXERCISE_TYPES } from './catalog.js';
+import { TEMPLATES } from './templates.js';
+import { MODULES, moduleOn, setModule } from './modules.js';
+import { fmtSeconds } from './calisthenics-data.js';
+import { openGuide as openStepGuide } from './calisthenics-panels.js';
+import { primeAlert, alertTimerEnd } from './rest-timer.js';
+import { thumbHtml } from './thumb.js';
 import { trySync, syncNow, cancelPendingSync, updateSyncStatus } from './sync.js';
 import { closeRestOverlay, initRestTimer, startRestFor } from './rest-timer.js';
 import { pad2, todayString, yesterdayString, parseNum, safeId, unitLabel, formatLoad, compareSets, isBetterSet, formatDateBR, formatDateShortBR, getWeekStart, getWeekEnd, emptyStateHtml, revealCard, searchKey, niceTicks, monthsAgo, readJSON, readListCached } from './utils.js';
@@ -18,26 +25,24 @@ import { loadRuns, runsByDate, weekTotals as runWeekTotals, totals as runTotals 
 // Versão carregada (js/version.js, lido antes dos módulos).
 const APP_VERSION = self.APP_VERSION || '—';
 
-// As chaves "Treino A/B" continuam sendo usadas no armazenamento (histórico,
-// séries, sessões); na tela cada treino aparece pelo grupo muscular.
-const GROUP_LABELS = { upper: 'Superior', lower: 'Inferior' };
-const GROUP_ORDER = ['upper', 'lower'];
-const orderedDays = [...days].sort((a, b) => GROUP_ORDER.indexOf(workoutData[a].group) - GROUP_ORDER.indexOf(workoutData[b].group));
+// Treinos montados pelo usuário (data.js). O `id` de cada um vai no histórico e
+// nas chaves da sessão; na tela aparecem o nome e a cor escolhidos.
 // Corrida aparece no calendário e no detalhe do dia como mais um "treino".
 const RUN_DAY = '__corrida__';
 const RUN_COLOR = '#ff9f43';
 function dayLabel(day) {
   if (day === RUN_DAY) return 'Corrida';
-  return (workoutData[day] && GROUP_LABELS[workoutData[day].group]) || day;
+  return (workoutData[day] && workoutData[day].name) || 'Treino';
 }
 
-// Academia mostra os exercícios (Superior/Inferior) ou a Corrida, escolhida no
-// terceiro botão. Fica lembrado em gym:view.
+// Os treinos mostram os exercícios ou a Corrida (módulo opcional), escolhida no
+// botão ao lado deles. Fica lembrado em gym:view.
 const GYM_VIEW_KEY = 'gym:view';
-let gymView = localStorage.getItem(GYM_VIEW_KEY) === 'run' ? 'run' : 'lift';
+let gymView = localStorage.getItem(GYM_VIEW_KEY) === 'run' && moduleOn('run') ? 'run' : 'lift';
 
 const LAST_DAY_KEY = 'gym:lastDay';
-let currentDay = days.includes(localStorage.getItem(LAST_DAY_KEY)) ? localStorage.getItem(LAST_DAY_KEY) : orderedDays[0];
+// null quando ainda não há nenhum treino (instalação nova): aparece a tela de boas-vindas.
+let currentDay = activeDays().includes(localStorage.getItem(LAST_DAY_KEY)) ? localStorage.getItem(LAST_DAY_KEY) : (activeDays()[0] || null);
 let expandedExerciseId = null;
 let evoSelectedExercise = null;
 let evoRangeMonths = 3;
@@ -121,11 +126,17 @@ function isWorkoutFinished(day, date) {
 function updateHeaderTitle() {
   if (gymView === 'run') {
     headerTitle.innerText = 'Corrida';
+    headerTitle.classList.remove('long');
     const week = runWeekTotals(todayString());
     headerSubtitle.innerText = `${week.count} ${week.count === 1 ? 'corrida' : 'corridas'} nesta semana`;
     return;
   }
-  headerTitle.innerText = dayLabel(currentDay);
+  headerTitle.innerText = currentDay ? dayLabel(currentDay) : 'Treinos';
+  headerTitle.classList.toggle('long', headerTitle.innerText.length > 14);
+  if (!currentDay && activeDays().length === 0) {
+    headerSubtitle.innerText = 'Monte seu primeiro treino';
+    return;
+  }
   // Conta os mesmos dias que aparecem marcados no calendário.
   const weekStart = getWeekStart(todayString());
   let count = 0;
@@ -182,6 +193,7 @@ function isGymModeActive() {
 function updateLiveTimer() {
   const timerEl = document.getElementById('workoutTimer');
   if (!timerEl) return;
+  if (!currentDay) { setScreenAwake(false); return; }
   const startRaw = localStorage.getItem(sessionStartKey(currentDay));
 
   if (!startRaw) {
@@ -237,7 +249,7 @@ setInterval(updateLiveTimer, 1000);
 
 function updateFinishButtonState() {
   const btn = document.getElementById('finishDayBtn');
-  if (!btn) return;
+  if (!btn || !currentDay) return;
   if (isWorkoutFinished(currentDay, sessionDateFor(currentDay))) {
     btn.innerText = "Treino Finalizado ✓";
     btn.disabled = true;
@@ -253,6 +265,7 @@ function updateFinishButtonState() {
 // Séries feitas / previstas do treino na sessão atual. Exercício pulado hoje
 // só conta as séries que chegaram a ser feitas.
 function sessionProgress(day) {
+  if (!workoutData[day]) return { done: 0, total: 0 };
   const skipped = getSkipped(day);
   let done = 0;
   let total = 0;
@@ -301,7 +314,7 @@ function showWorkoutSummary(day) {
       { value: summary.duration || '—', label: 'Duração' },
       { value: summary.prsToday.length, label: 'PRs' }
     ],
-    prs: summary.prsToday.map(pr => ({ name: pr.exercise, value: `${formatLoad(pr.weight, pr.unit)} × ${pr.reps}` })),
+    prs: summary.prsToday.map(pr => ({ name: pr.exercise, value: setText(pr.exercise, pr, pr.unit) })),
     onShare: () => shareSummaryImage(day)
   });
 }
@@ -316,7 +329,7 @@ async function shareSummaryImage(day) {
     const best = progress ? progress.best : item.sets[0];
     return {
       name: item.exercise,
-      best: `${formatLoad(best.weight, best.unit || 'kg')} × ${best.reps}`,
+      best: setText(item.exercise, best, best.unit || 'kg'),
       pr: !!(progress && progress.isPR)
     };
   });
@@ -395,8 +408,26 @@ function bestSetOf(sets) {
   return sets.reduce((best, h) => isBetterSet(h, best) ? h : best);
 }
 
-function describeLoadDelta(cur, prev, unit) {
+// Uma série como texto, conforme o tipo do exercício: "40kg × 10", "12 reps" ou "30s".
+function setText(exercise, s, unit) {
+  const type = exerciseType(exercise);
+  if (type === 'time') return fmtSeconds(s.reps);
+  if (type === 'reps') return `${s.reps} rep${s.reps === 1 ? '' : 's'}`;
+  return `${formatLoad(s.weight, unit || s.unit || 'kg')} × ${s.reps}`;
+}
+
+// Igual, com o "×" apagado dos chips de série.
+function setChipHtml(exercise, s, unit) {
+  if (exerciseType(exercise) !== 'load') return setText(exercise, s, unit);
+  return `${formatLoad(s.weight, unit || s.unit || 'kg')} <span class="evo-set-chip-x">×</span> ${s.reps}`;
+}
+
+function describeLoadDelta(cur, prev, unit, type = 'load') {
   const sign = n => (n > 0 ? '+' : '-');
+  if (type === 'time' && cur.reps !== prev.reps) {
+    const diff = cur.reps - prev.reps;
+    return { dir: diff > 0 ? 'up' : 'down', text: `${sign(diff)}${fmtSeconds(Math.abs(diff))}` };
+  }
   if (cur.weight !== prev.weight) {
     const diff = cur.weight - prev.weight;
     return { dir: diff > 0 ? 'up' : 'down', text: `${sign(diff)}${formatLoad(Math.round(Math.abs(diff) * 100) / 100, unit)}` };
@@ -427,7 +458,7 @@ function getDayProgress(exercise, dateStr) {
     isPR: isBetterSet(best, prevRecord),
     prevRecord,
     prevDate,
-    delta: describeLoadDelta(best, bestSetOf(prior.filter(h => h.date === prevDate)), unit)
+    delta: describeLoadDelta(best, bestSetOf(prior.filter(h => h.date === prevDate)), unit, exerciseType(exercise))
   };
 }
 
@@ -476,7 +507,7 @@ function maybeShowSetFeedback(exercise, historyBefore, weight, reps, unit, sessi
     : null;
   const isNewPR = prevBest && isBetterSet({ weight, reps }, prevBest);
   if (isNewPR) {
-    showToast('🏆 Novo recorde pessoal!', `${formatLoad(weight, unit)} × ${reps} supera seu melhor anterior (${formatLoad(prevBest.weight, unit)} × ${prevBest.reps}).`);
+    showToast('🏆 Novo recorde pessoal!', `${setText(exercise, { weight, reps }, unit)} supera seu melhor anterior (${setText(exercise, prevBest, unit)}).`);
   }
 }
 
@@ -498,6 +529,7 @@ function toggleSet(day, exercise, index) {
 }
 
 function updateSessionBar(day) {
+  if (!day) { updateHeaderTitle(); return; }
   const { done, total } = sessionProgress(day);
   sessionCountEl.innerHTML = `${done}<span class="session-total">/${total}</span>`;
   sessionFillEl.style.width = `${total > 0 ? (done / total) * 100 : 0}%`;
@@ -841,10 +873,7 @@ function bindTopBarModals() {
     document.getElementById('closeConfig').addEventListener('click', () => {
         if (configModal) configModal.classList.remove('visible');
     });
-    document.getElementById('catalogBtn').addEventListener('click', () => {
-        renderCatalogTab();
-        if (catalogModal) catalogModal.classList.add('visible');
-    });
+    document.getElementById('catalogBtn').addEventListener('click', () => openCatalog());
     document.getElementById('closeCatalog').addEventListener('click', () => {
         if (catalogModal) catalogModal.classList.remove('visible');
     });
@@ -857,23 +886,32 @@ function bindTopBarModals() {
     });
 }
 
-// ---------- Editor do treino (Configurações > Editar Exercícios) ----------
-// Mexe só em `workoutData` + `gym:plan`; histórico e séries continuam nas mesmas
-// chaves (pelo nome do exercício), então nada registrado se perde.
-const MAX_SETS = 10;
+// ---------- Meus treinos (Configurações › Meus Treinos e o "+" ao lado dos treinos) ----------
+// Criar, renomear, mudar a cor, reordenar e apagar treinos, e montar cada um com
+// exercícios do catálogo. O histórico e as séries ficam nas mesmas chaves (pelo id
+// do treino e o nome do exercício), então nada registrado se perde.
 let planEditDay = null;
 
-function isInAnyPlan(exercise) {
-  return days.some(d => workoutData[d].exercises.includes(exercise));
+// Escolhe o treino mostrado na tela principal (ou nenhum, se não houver).
+function selectDay(day) {
+  currentDay = day && workoutData[day] && !workoutData[day].archived ? day : (activeDays()[0] || null);
+  if (currentDay) localStorage.setItem(LAST_DAY_KEY, currentDay);
+  expandedExerciseId = null;
+}
+
+function refreshGymScreen() {
+  if (!currentDay || !workoutData[currentDay] || workoutData[currentDay].archived) selectDay(currentDay);
+  renderExercises(currentDay);
+  updateSessionBar(currentDay);
+  updateLiveTimer();
+  applyGymView();
 }
 
 function applyPlanChange() {
   savePlan();
   trySync();
-  renderExercises(currentDay);
-  updateSessionBar(currentDay);
-  renderDaySelectors();
-  renderPlanEditor();
+  refreshGymScreen();
+  if (document.getElementById('planModal').classList.contains('visible')) renderPlanEditor();
 }
 
 function removeFromPlan(day, exercise) {
@@ -887,6 +925,7 @@ function removeFromPlan(day, exercise) {
 let planSwap = null;
 function addToPlan(day, exercise) {
   const plan = workoutData[day];
+  if (plan.exercises.includes(exercise)) { planSwap = null; return; }
   const idx = plan.exercises.indexOf(planSwap);
   if (idx >= 0) {
     const old = planSwap;
@@ -900,139 +939,391 @@ function addToPlan(day, exercise) {
   plan.retired = plan.retired.filter(ex => ex !== exercise);
 }
 
+// Tem algum registro desse treino? (decide se apagar arquiva ou remove de vez)
+function workoutHasHistory(day) {
+  if (getAllTimeCompletedDays().some(c => c.day === day)) return true;
+  return exercisesEverIn(day).some(ex => loadHistory(ex).some(h => h.day === day));
+}
+
 const planIcon = {
   up: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 15l-6-6-6 6"/></svg>',
   down: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>',
+  left: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M15 18l-6-6 6-6"/></svg>',
+  right: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 18l6-6-6-6"/></svg>',
+  edit: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
   remove: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg>',
   swap: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M7 4 3 8l4 4"/><path d="M3 8h14"/><path d="m17 20 4-4-4-4"/><path d="M21 16H7"/></svg>'
 };
 
-function renderPlanEditor() {
-  const content = document.getElementById('planModalContent');
-  const day = planEditDay;
-  const plan = workoutData[day];
-  const tabs = orderedDays.map(d => `<button type="button" class="tab-btn ${d === day ? 'active' : ''}" data-plan-day="${d}">${dayLabel(d)}</button>`).join('');
-  const rows = plan.exercises.map((ex, i) => {
-    const n = setsFor(day, ex);
-    return `
-      <div class="plan-row ${ex === planSwap ? 'swapping' : ''}" data-idx="${i}">
-        <div class="plan-move">
-          <button type="button" class="plan-icon" data-act="up" aria-label="Subir" ${i === 0 ? 'disabled' : ''}>${planIcon.up}</button>
-          <button type="button" class="plan-icon" data-act="down" aria-label="Descer" ${i === plan.exercises.length - 1 ? 'disabled' : ''}>${planIcon.down}</button>
-        </div>
-        <span class="plan-name">${ex}</span>
-        <div class="plan-sets">
-          <button type="button" class="plan-icon" data-act="less" aria-label="Menos uma série" ${n <= 1 ? 'disabled' : ''}>−</button>
-          <span class="plan-sets-num">${n}<small>${n === 1 ? 'série' : 'séries'}</small></span>
-          <button type="button" class="plan-icon" data-act="more" aria-label="Mais uma série" ${n >= MAX_SETS ? 'disabled' : ''}>+</button>
-        </div>
-        <button type="button" class="plan-icon" data-act="swap" aria-label="Trocar ${ex} por outro exercício" aria-pressed="${ex === planSwap}">${planIcon.swap}</button>
-        <button type="button" class="plan-icon plan-remove" data-act="remove" aria-label="Tirar do treino">${planIcon.remove}</button>
-      </div>`;
-  }).join('');
+const TYPE_TAG = { reps: 'reps', time: 'tempo' };
 
-  const available = {};
-  Object.keys(db).filter(ex => !isInAnyPlan(ex)).forEach(ex => {
-    (available[db[ex].cat] = available[db[ex].cat] || []).push(ex);
-  });
-  const availableHtml = Object.keys(available).length === 0
-    ? '<option value="">Todos os exercícios já estão em algum treino</option>'
-    : Object.entries(available).map(([cat, list]) => `<optgroup label="${cat}">${list.map(ex => `<option value="${ex}">${ex}</option>`).join('')}</optgroup>`).join('');
-  const muscleOptions = Object.keys(MUSCLE_CATEGORIES).map(m => `<option value="${m}">${m}</option>`).join('');
-
-  content.innerHTML = `
-    <nav class="selectors" style="padding-top:0;">${tabs}</nav>
-    <div class="plan-list">${rows || '<p class="plan-empty">Nenhum exercício nesse treino.</p>'}</div>
-    <div class="backup-section">
-      <h3 id="planAddTitle">${planSwap ? `Trocar ${planSwap} por` : 'Adicionar exercício'}</h3>
-      <select id="planAddSelect" class="plan-input">${availableHtml}</select>
-      <button type="button" id="planAddBtn" class="save-btn plan-btn" ${Object.keys(available).length === 0 ? 'disabled' : ''}>${planSwap ? 'Trocar' : `Adicionar ao ${dayLabel(day)}`}</button>
-      ${planSwap ? '<button type="button" id="planSwapCancel" class="set-edit-link plan-swap-cancel">Cancelar troca</button>' : ''}
-      <h3>Criar exercício novo</h3>
-      <input type="text" id="planNewName" class="plan-input" maxlength="60" placeholder="Nome do exercício">
-      <select id="planNewMuscle" class="plan-input">${muscleOptions}</select>
-      <button type="button" id="planNewBtn" class="save-btn plan-btn">${planSwap ? `Criar e trocar por ${planSwap}` : `Criar e adicionar ao ${dayLabel(day)}`}</button>
-    </div>`;
+// Cartões dos modelos prontos (tela de boas-vindas e fim do editor).
+function templatesHtml() {
+  return `<div class="template-list">${TEMPLATES.map(t => `
+    <button type="button" class="template-card" data-template="${t.id}">
+      <span class="template-name">${t.name}</span>
+      <span class="template-desc">${t.desc}</span>
+      <span class="template-workouts">${t.workouts.map(w => `<span>${w.name} · ${w.exercises.length}</span>`).join('')}</span>
+    </button>`).join('')}</div>`;
 }
 
-function createCustomExercise(rawName, prim) {
+function applyTemplate(id) {
+  const template = TEMPLATES.find(t => t.id === id);
+  if (!template) return null;
+  const ids = template.workouts.map(w => createWorkout(w.name, w.exercises, w.sets || {}));
+  trySync();
+  showToast(ids.length > 1 ? 'Treinos criados' : 'Treino criado', `${template.workouts.map(w => w.name).join(', ')}. Dá para mudar tudo em Meus Treinos.`);
+  return ids[0];
+}
+
+async function newWorkoutFlow() {
+  const name = await promptDialog({
+    title: 'Novo treino',
+    text: 'Dê um nome ao treino. Depois você escolhe os exercícios.',
+    placeholder: 'Ex: Peito e Tríceps',
+    confirmLabel: 'Criar treino'
+  });
+  if (!name) return;
+  const id = createWorkout(name);
+  trySync();
+  selectDay(id);
+  setGymView('lift');
+  refreshGymScreen();
+  openPlanEditor(id);
+}
+
+function openPlanEditor(day) {
+  planEditDay = day && workoutData[day] && !workoutData[day].archived ? day : (currentDay || activeDays()[0] || null);
+  planSwap = null;
+  renderPlanEditor();
+  document.getElementById('planModal').classList.add('visible');
+}
+
+function renderPlanEditor() {
+  const content = document.getElementById('planModalContent');
+  const active = activeDays();
+  if (!planEditDay || !active.includes(planEditDay)) planEditDay = active[0] || null;
+  const day = planEditDay;
+  const tabs = active.map(d => `<button type="button" class="tab-btn ${d === day ? 'active' : ''}" data-plan-day="${d}" style="--tab-color:${getDayColor(d)}"><span class="tab-dot" style="background:${getDayColor(d)}"></span>${dayLabel(d)}</button>`).join('')
+    + '<button type="button" class="tab-btn tab-add" data-plan-new aria-label="Criar treino">+ Novo</button>';
+  if (!day) {
+    content.innerHTML = `
+      <nav class="selectors scroll plan-tabs">${tabs}</nav>
+      <div class="plan-intro">
+        <p>Você ainda não tem treinos. Crie um do zero ou comece com um modelo pronto.</p>
+      </div>
+      ${templatesHtml()}`;
+    return;
+  }
+  const plan = workoutData[day];
+  const position = active.indexOf(day);
+  // Tocar no exercício abre a configuração dele (séries, carga, reps e descanso).
+  const rows = plan.exercises.map((ex, i) => {
+    const tag = TYPE_TAG[exerciseType(ex)];
+    return `
+      <div class="plan-row ${ex === planSwap ? 'swapping' : ''}" data-idx="${i}">
+        <button type="button" class="plan-main" data-act="config" aria-label="Configurar ${ex.replace(/"/g, '&quot;')}">
+          ${thumbHtml(db[ex], ex, '', { small: true, interactive: false })}
+          <span class="plan-text">
+            <span class="plan-name">${ex}${tag ? ` <small class="type-tag">${tag}</small>` : ''}</span>
+            <span class="plan-summary">${exerciseSummary(day, ex)}</span>
+          </span>
+          <span class="plan-edit" aria-hidden="true">${planIcon.edit}</span>
+        </button>
+        <div class="plan-tools">
+          <div class="plan-move">
+            <button type="button" class="plan-icon" data-act="up" aria-label="Subir" ${i === 0 ? 'disabled' : ''}>${planIcon.up}</button>
+            <button type="button" class="plan-icon" data-act="down" aria-label="Descer" ${i === plan.exercises.length - 1 ? 'disabled' : ''}>${planIcon.down}</button>
+          </div>
+          <button type="button" class="plan-icon" data-act="swap" aria-label="Trocar ${ex} por outro exercício" aria-pressed="${ex === planSwap}">${planIcon.swap}</button>
+          <button type="button" class="plan-icon plan-remove" data-act="remove" aria-label="Tirar do treino">${planIcon.remove}</button>
+        </div>
+      </div>`;
+  }).join('');
+  const swatches = WORKOUT_COLORS.map(c => `<button type="button" class="color-swatch ${c === plan.color ? 'active' : ''}" data-plan-color="${c}" style="background:${c}" aria-label="Cor ${c}" aria-pressed="${c === plan.color}"></button>`).join('');
+  const muscleOptions = Object.keys(MUSCLE_CATEGORIES).map(m => `<option value="${m}">${m}</option>`).join('');
+  const typeOptions = Object.entries(EXERCISE_TYPES).map(([id, label]) => `<option value="${id}">${label}</option>`).join('');
+
+  content.innerHTML = `
+    <nav class="selectors scroll plan-tabs">${tabs}</nav>
+    <section class="plan-head">
+      <div class="plan-head-row">
+        <span class="plan-head-name">${plan.name}</span>
+        <button type="button" class="plan-icon" data-plan-rename aria-label="Renomear treino">${planIcon.edit}</button>
+      </div>
+      <div class="color-row" role="group" aria-label="Cor do treino">${swatches}</div>
+      <div class="plan-head-actions">
+        <button type="button" class="plan-icon" data-plan-move="-1" aria-label="Mover para a esquerda" ${position === 0 ? 'disabled' : ''}>${planIcon.left}</button>
+        <button type="button" class="plan-icon" data-plan-move="1" aria-label="Mover para a direita" ${position === active.length - 1 ? 'disabled' : ''}>${planIcon.right}</button>
+        <button type="button" class="set-edit-link danger" data-plan-delete>Apagar treino</button>
+      </div>
+    </section>
+    <div class="plan-list">${rows || '<p class="plan-empty">Nenhum exercício nesse treino ainda.</p>'}</div>
+    <button type="button" id="planAddBtn" class="save-btn plan-btn plan-add">${planSwap ? `Escolher exercício no lugar de ${planSwap}` : 'Adicionar exercícios'}</button>
+    ${planSwap ? '<button type="button" id="planSwapCancel" class="set-edit-link plan-swap-cancel">Cancelar troca</button>'
+      : plan.exercises.length ? '<button type="button" id="planConfigBtn" class="save-btn plan-btn">Configurar séries, cargas e descanso</button>' : ''}
+    <div class="backup-section">
+      <h3 id="planAddTitle">Criar exercício novo</h3>
+      <input type="text" id="planNewName" class="plan-input" maxlength="60" placeholder="Nome do exercício">
+      <label class="plan-label" for="planNewMuscle">Músculo principal</label>
+      <select id="planNewMuscle" class="plan-input">${muscleOptions}</select>
+      <label class="plan-label" for="planNewType">Como registrar</label>
+      <select id="planNewType" class="plan-input">${typeOptions}</select>
+      <button type="button" id="planNewBtn" class="save-btn plan-btn">${planSwap ? `Criar e trocar por ${planSwap}` : `Criar e adicionar ao ${dayLabel(day)}`}</button>
+      <h3>Modelos prontos</h3>
+      <p class="plan-intro">Cria os treinos do modelo, além dos que você já tem.</p>
+      ${templatesHtml()}
+    </div>`;
+  revealActiveTab(content.querySelector('.plan-tabs'));
+}
+
+// Fileira rolável de treinos: deixa o botão escolhido à vista.
+function revealActiveTab(row) {
+  const active = row && row.querySelector('.tab-btn.active');
+  if (!active) return;
+  const left = active.getBoundingClientRect().left - row.getBoundingClientRect().left + row.scrollLeft;
+  row.scrollLeft = Math.max(0, left - (row.clientWidth - active.offsetWidth) / 2);
+}
+
+function createCustomExercise(rawName, prim, type) {
   const name = rawName.trim().replace(/\s+/g, ' ');
   const invalid = text => { alertDialog({ title: 'Não deu para criar', text }); return null; };
   if (name.length < 2) return invalid('Digite o nome do exercício.');
   if (/["<>\\&]/.test(name)) return invalid('O nome não pode ter os caracteres " < > \\ &');
+  // Mesmo nome de um que já existe: usa o existente (o histórico é pelo nome).
   const existing = Object.keys(db).find(ex => ex.toLowerCase() === name.toLowerCase() || safeId(ex).toLowerCase() === safeId(name).toLowerCase());
-  if (existing) {
-    if (isInAnyPlan(existing)) return invalid(`"${existing}" já está em um treino.`);
-    return existing;
-  }
+  if (existing) return existing;
   if (!safeId(name)) return invalid('Use pelo menos uma letra ou número sem acento no nome.');
-  addCustomExercise(name, prim);
+  addCustomExercise(name, prim, type);
   return name;
 }
 
 function bindPlanEditor() {
   const modal = document.getElementById('planModal');
   const content = document.getElementById('planModalContent');
-  document.getElementById('editPlanBtn').addEventListener('click', () => {
-    planEditDay = currentDay;
-    planSwap = null;
-    renderPlanEditor();
-    modal.classList.add('visible');
-  });
+  document.getElementById('editPlanBtn').addEventListener('click', () => openPlanEditor(currentDay));
   document.getElementById('closePlan').addEventListener('click', () => modal.classList.remove('visible'));
 
-  content.addEventListener('click', (e) => {
+  content.addEventListener('click', async (e) => {
     const tab = e.target.closest('[data-plan-day]');
     if (tab) { planEditDay = tab.dataset.planDay; planSwap = null; renderPlanEditor(); return; }
-    if (e.target.closest('#planSwapCancel')) { planSwap = null; renderPlanEditor(); return; }
-
-    if (e.target.closest('#planAddBtn')) {
-      const ex = document.getElementById('planAddSelect').value;
-      if (!ex || !db[ex]) return;
-      addToPlan(planEditDay, ex);
+    if (e.target.closest('[data-plan-new]')) {
+      const name = await promptDialog({ title: 'Novo treino', text: 'Dê um nome ao treino.', placeholder: 'Ex: Peito e Tríceps', confirmLabel: 'Criar treino' });
+      if (!name) return;
+      planEditDay = createWorkout(name);
+      if (!currentDay) selectDay(planEditDay);
       applyPlanChange();
       return;
     }
-    if (e.target.closest('#planNewBtn')) {
-      const name = createCustomExercise(document.getElementById('planNewName').value, document.getElementById('planNewMuscle').value);
+    const templateBtn = e.target.closest('[data-template]');
+    if (templateBtn) {
+      const first = applyTemplate(templateBtn.dataset.template);
+      if (!first) return;
+      planEditDay = first;
+      if (!currentDay) selectDay(first);
+      applyPlanChange();
+      return;
+    }
+    if (e.target.closest('#planSwapCancel')) { planSwap = null; renderPlanEditor(); return; }
+    const day = planEditDay;
+    if (!day) return;
+    const plan = workoutData[day];
+    if (e.target.closest('[data-plan-rename]')) {
+      const name = await promptDialog({ title: 'Renomear treino', text: `Nome atual: ${plan.name}`, placeholder: plan.name, confirmLabel: 'Salvar nome' });
       if (!name) return;
-      addToPlan(planEditDay, name);
+      updateWorkout(day, { name });
+      applyPlanChange();
+      return;
+    }
+    const color = e.target.closest('[data-plan-color]');
+    if (color) { updateWorkout(day, { color: color.dataset.planColor }); applyPlanChange(); return; }
+    const move = e.target.closest('[data-plan-move]');
+    if (move && !move.disabled) { moveWorkout(day, Number(move.dataset.planMove)); applyPlanChange(); return; }
+    if (e.target.closest('[data-plan-delete]')) {
+      const hasHistory = workoutHasHistory(day);
+      const ok = await confirmDialog({
+        title: `Apagar o treino ${plan.name}?`,
+        text: hasHistory
+          ? 'Ele sai da lista de treinos. Os dias já treinados continuam no calendário e nas estatísticas.'
+          : 'Ele sai da lista de treinos. Não dá para desfazer.',
+        confirmLabel: 'Apagar treino',
+        danger: true
+      });
+      if (!ok) return;
+      deleteWorkout(day, hasHistory);
+      if (currentDay === day) selectDay(null);
+      planEditDay = null;
+      applyPlanChange();
+      return;
+    }
+
+    if (e.target.closest('#planAddBtn')) {
+      // Escolhe vários de uma vez; no fim pergunta se quer configurar agora.
+      const swapping = !!planSwap;
+      openCatalog({
+        pickFor: day,
+        title: swapping ? `Trocar ${planSwap}` : `Adicionar ao ${plan.name}`,
+        multi: !swapping,
+        onConfigure: ex => openExerciseConfig(day, [ex]),
+        onPick: async list => {
+          list.forEach(ex => addToPlan(day, ex));
+          applyPlanChange();
+          if (swapping) return;
+          const ok = await confirmDialog({
+            title: list.length === 1 ? 'Exercício adicionado' : `${list.length} exercícios adicionados`,
+            text: 'Quer configurar agora as séries, a carga e o descanso? Dá para mudar depois tocando no exercício.',
+            confirmLabel: 'Configurar agora',
+            cancelLabel: 'Depois'
+          });
+          if (ok) openExerciseConfig(day, list);
+        }
+      });
+      return;
+    }
+    if (e.target.closest('#planConfigBtn')) { openExerciseConfig(day, plan.exercises); return; }
+    if (e.target.closest('#planNewBtn')) {
+      const name = createCustomExercise(document.getElementById('planNewName').value, document.getElementById('planNewMuscle').value, document.getElementById('planNewType').value);
+      if (!name) return;
+      addToPlan(day, name);
       applyPlanChange();
       return;
     }
 
     const btn = e.target.closest('[data-act]');
     if (!btn || btn.disabled) return;
-    const plan = workoutData[planEditDay];
     const idx = Number(btn.closest('.plan-row').dataset.idx);
     const ex = plan.exercises[idx];
     const act = btn.dataset.act;
+    if (act === 'config') { openExerciseConfig(day, [ex]); return; }
     if (act === 'swap') {
       planSwap = planSwap === ex ? null : ex;
       renderPlanEditor();
-      if (planSwap) document.getElementById('planAddTitle').scrollIntoView({ behavior: 'smooth', block: 'center' });
+      if (planSwap) document.getElementById('planAddBtn').scrollIntoView({ behavior: 'smooth', block: 'center' });
       return;
     }
     if (act === 'up' || act === 'down') {
       const to = act === 'up' ? idx - 1 : idx + 1;
       [plan.exercises[idx], plan.exercises[to]] = [plan.exercises[to], plan.exercises[idx]];
-    } else if (act === 'less' || act === 'more') {
-      const n = setsFor(planEditDay, ex) + (act === 'more' ? 1 : -1);
-      plan.sets[ex] = Math.max(1, Math.min(MAX_SETS, n));
     } else if (act === 'remove') {
-      const day = planEditDay;
-      confirmDialog({
+      const ok = await confirmDialog({
         title: `Tirar do ${dayLabel(day)}?`,
         text: `${ex} sai do treino. O histórico dele continua salvo e você pode adicioná-lo de volta quando quiser.`,
         confirmLabel: 'Tirar do treino',
         danger: true
-      }).then(ok => {
-        if (!ok) return;
-        removeFromPlan(day, ex);
-        applyPlanChange();
       });
+      if (!ok) return;
+      removeFromPlan(day, ex);
+    }
+    applyPlanChange();
+  });
+}
+
+// ---------- Configurar exercícios: séries, carga, repetições e descanso ----------
+// Grava nas mesmas chaves que o app já usava (e a versão 2.6 também): séries no
+// treino, treino:<dia>:<exercício> (o que o card traz preenchido) e
+// rest:ex:<exercício> (descanso do cronômetro). Cada mudança já fica salva.
+const REST_CHOICES = [60, 90, 120, 180];
+const exConfigModal = document.getElementById('exConfigModal');
+const exConfigContent = document.getElementById('exConfigContent');
+let exConfigDay = null;
+
+function fmtRest(s) { return s % 60 ? `${Math.floor(s / 60)}:${pad2(s % 60)}` : `${s / 60} min`; }
+function restFor(ex) { return Number(localStorage.getItem(`rest:ex:${ex}`)) || 0; }
+
+// "3 séries · 40 kg × 10 · descanso 1:30" (linha embaixo do nome em Meus Treinos).
+function exerciseSummary(day, ex) {
+  const n = setsFor(day, ex);
+  const type = exerciseType(ex);
+  const p = loadProgress(day, ex);
+  const parts = [`${n} ${n === 1 ? 'série' : 'séries'}`];
+  if (type === 'load' && p.weight !== '') parts.push(formatLoad(p.weight, p.unit) + (p.reps !== '' ? ` × ${p.reps}` : ''));
+  else if (type !== 'load' && p.reps !== '') parts.push(type === 'time' ? fmtSeconds(Number(p.reps)) : `${p.reps} reps`);
+  const rest = restFor(ex);
+  if (rest) parts.push(`descanso ${fmtRest(rest)}`);
+  return parts.join(' · ');
+}
+
+function exConfigCardHtml(day, ex) {
+  const type = exerciseType(ex);
+  const p = loadProgress(day, ex);
+  const n = setsFor(day, ex);
+  const rest = restFor(ex);
+  const value = ex.replace(/"/g, '&quot;');
+  const attr = v => String(v).replace(/"/g, '&quot;');
+  return `
+    <section class="cfg-card" data-ex="${value}">
+      <div class="cfg-head">${thumbHtml(db[ex], ex, `data-guide="${value}"`, { small: true })}<span class="cfg-name">${ex}</span></div>
+      <div class="cfg-line">
+        <span class="cfg-label">Séries</span>
+        <div class="plan-sets">
+          <button type="button" class="plan-icon" data-cfg="less" aria-label="Menos uma série" ${n <= 1 ? 'disabled' : ''}>−</button>
+          <span class="plan-sets-num">${n}</span>
+          <button type="button" class="plan-icon" data-cfg="more" aria-label="Mais uma série" ${n >= MAX_SETS ? 'disabled' : ''}>+</button>
+        </div>
+      </div>
+      <div class="input-row">
+        ${type === 'load' ? `<div class="input-group"><label>Carga (${unitLabel(p.unit)})</label><input type="number" inputmode="decimal" min="0" data-cfg-field="weight" value="${attr(p.weight)}" placeholder="—"></div>` : ''}
+        <div class="input-group"><label>${REPS_LABEL[type]}</label><input type="number" inputmode="numeric" min="0" data-cfg-field="reps" value="${attr(p.reps)}" placeholder="—"></div>
+      </div>
+      <div class="cfg-line">
+        <span class="cfg-label">Descanso</span>
+        <div class="cfg-rest" role="group" aria-label="Descanso">${REST_CHOICES.map(s => `<button type="button" class="cfg-chip ${s === rest ? 'active' : ''}" data-cfg-rest="${s}" aria-pressed="${s === rest}">${fmtRest(s)}</button>`).join('')}</div>
+      </div>
+    </section>`;
+}
+
+function openExerciseConfig(day, list) {
+  const plan = workoutData[day];
+  const exercises = plan ? list.filter(ex => plan.exercises.includes(ex)) : [];
+  if (!exercises.length) return;
+  exConfigDay = day;
+  document.getElementById('exConfigTitle').textContent = exercises.length === 1 ? 'Configurar exercício' : `Configurar ${plan.name}`;
+  exConfigContent.innerHTML = exercises.map(ex => exConfigCardHtml(day, ex)).join('')
+    + '<button type="button" class="save-btn cfg-done" data-cfg-done>Pronto</button>';
+  exConfigContent.scrollTop = 0;
+  exConfigModal.classList.add('visible');
+}
+
+function bindExerciseConfig() {
+  const close = () => exConfigModal.classList.remove('visible');
+  document.getElementById('closeExConfig').addEventListener('click', close);
+  exConfigContent.addEventListener('click', e => {
+    if (e.target.closest('[data-cfg-done]')) { close(); return; }
+    const guide = e.target.closest('[data-guide]');
+    if (guide) { showExerciseGuide(guide.dataset.guide); return; }
+    const card = e.target.closest('.cfg-card');
+    const plan = workoutData[exConfigDay];
+    if (!card || !plan) return;
+    const ex = card.dataset.ex;
+    const step = e.target.closest('[data-cfg]');
+    if (step && !step.disabled) {
+      const n = Math.max(1, Math.min(MAX_SETS, setsFor(exConfigDay, ex) + (step.dataset.cfg === 'more' ? 1 : -1)));
+      plan.sets[ex] = n;
+      card.querySelector('.plan-sets-num').textContent = n;
+      card.querySelector('[data-cfg="less"]').disabled = n <= 1;
+      card.querySelector('[data-cfg="more"]').disabled = n >= MAX_SETS;
+      applyPlanChange();
       return;
     }
+    const chip = e.target.closest('[data-cfg-rest]');
+    if (chip) {
+      localStorage.setItem(`rest:ex:${ex}`, chip.dataset.cfgRest);
+      card.querySelectorAll('[data-cfg-rest]').forEach(c => {
+        c.classList.toggle('active', c === chip);
+        c.setAttribute('aria-pressed', String(c === chip));
+      });
+      applyPlanChange();
+    }
+  });
+  exConfigContent.addEventListener('change', e => {
+    const field = e.target.dataset.cfgField;
+    if (!field || !exConfigDay) return;
+    const ex = e.target.closest('.cfg-card').dataset.ex;
+    const p = loadProgress(exConfigDay, ex);
+    const v = e.target.value.trim();
+    p[field] = v === '' || !(Number(v) >= 0) ? '' : v;
+    e.target.value = p[field];
+    localStorage.setItem(storageKey(exConfigDay, ex), JSON.stringify({ weight: p.weight, reps: p.reps, notes: p.notes, unit: p.unit }));
     applyPlanChange();
   });
 }
@@ -1073,13 +1364,17 @@ function init() {
   bindDayDetailModal();
   bindDateFixTool();
   bindPlanEditor();
+  bindExerciseConfig();
   initBackNav();
   initVersionInfo();
   requestPersistentStorage();
   bindStorageFullWarning();
   initAutoUpdate();
   initRun({ onChange: onRunsChanged });
-  if (gymView === 'run') applyGymView();
+  bindWelcome();
+  bindCatalog();
+  bindModuleSettings();
+  applyGymView();
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refreshIfNewDay(); });
   // Abriu: desliga a tela de resgate (js/rescue.js).
   if (window.treinoReady) window.treinoReady();
@@ -1142,17 +1437,24 @@ function hasUnsavedInput() {
   const r = repsInput.value;
   const savedW = String(saved.weight ?? '');
   const savedR = String(saved.reps ?? '');
-  return (w !== '' && w !== savedW) || (r !== '' && r !== savedR);
+  // Só repetições/tempo: a carga é um campo escondido com 0, não conta.
+  const weightChanged = exerciseType(exercise) === 'load' && w !== '' && w !== savedW;
+  return weightChanged || (r !== '' && r !== savedR);
 }
 
 function renderDaySelectors() {
   daySelectorsContainer.innerHTML = '';
+  // Fileira rolável: com muitos treinos os botões não espremem.
+  daySelectorsContainer.classList.add('scroll');
   const completedDays = getCompletedDays().map(c => c.day);
-  orderedDays.forEach(day => {
+  activeDays().forEach(day => {
     const btn = document.createElement('button');
     const isCompleted = completedDays.includes(day);
+    btn.type = 'button';
     btn.className = `tab-btn ${day === currentDay && gymView === 'lift' ? 'active' : ''} ${isCompleted ? 'completed' : ''}`;
-    btn.innerText = dayLabel(day);
+    btn.style.setProperty('--tab-color', getDayColor(day));
+    btn.innerHTML = `<span class="tab-dot" style="background:${getDayColor(day)}"></span>`;
+    btn.append(dayLabel(day));
     btn.onclick = async () => {
       if (day === currentDay && gymView === 'lift') return;
       if (gymView === 'lift' && hasUnsavedInput() && !(await confirmDialog({
@@ -1162,9 +1464,7 @@ function renderDaySelectors() {
       }))) {
         return;
       }
-      currentDay = day;
-      localStorage.setItem(LAST_DAY_KEY, day);
-      expandedExerciseId = null;
+      selectDay(day);
       setGymView('lift');
       renderExercises(currentDay);
       updateSessionBar(currentDay);
@@ -1173,25 +1473,40 @@ function renderDaySelectors() {
     };
     daySelectorsContainer.appendChild(btn);
   });
-  // Corrida: verde quando teve corrida nesta semana, como os treinos finalizados.
-  const runBtn = document.createElement('button');
-  runBtn.className = `tab-btn ${gymView === 'run' ? 'active' : ''} ${runWeekTotals(todayString()).count > 0 ? 'completed' : ''}`;
-  runBtn.innerText = 'Corrida';
-  runBtn.onclick = async () => {
-    if (gymView === 'run') return;
-    if (hasUnsavedInput() && !(await confirmDialog({
-      title: 'Trocar para Corrida?',
-      text: 'A carga/reps que você digitou ainda não foi registrada e vai se perder.',
-      confirmLabel: 'Trocar mesmo assim'
-    }))) return;
-    expandedExerciseId = null;
-    setGymView('run');
-  };
-  daySelectorsContainer.appendChild(runBtn);
+  // Corrida (módulo opcional): verde quando teve corrida nesta semana.
+  if (moduleOn('run')) {
+    const runBtn = document.createElement('button');
+    runBtn.type = 'button';
+    runBtn.className = `tab-btn ${gymView === 'run' ? 'active' : ''} ${runWeekTotals(todayString()).count > 0 ? 'completed' : ''}`;
+    runBtn.style.setProperty('--tab-color', RUN_COLOR);
+    runBtn.innerHTML = `<span class="tab-dot" style="background:${RUN_COLOR}"></span>`;
+    runBtn.append('Corrida');
+    runBtn.onclick = async () => {
+      if (gymView === 'run') return;
+      if (hasUnsavedInput() && !(await confirmDialog({
+        title: 'Trocar para Corrida?',
+        text: 'A carga/reps que você digitou ainda não foi registrada e vai se perder.',
+        confirmLabel: 'Trocar mesmo assim'
+      }))) return;
+      expandedExerciseId = null;
+      setGymView('run');
+    };
+    daySelectorsContainer.appendChild(runBtn);
+  }
+  if (activeDays().length > 0) {
+    const addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.className = 'tab-btn tab-add';
+    addBtn.setAttribute('aria-label', 'Criar treino');
+    addBtn.textContent = '+';
+    addBtn.onclick = newWorkoutFlow;
+    daySelectorsContainer.appendChild(addBtn);
+  }
+  revealActiveTab(daySelectorsContainer);
   updateFinishButtonState();
 }
 
-// Troca entre os exercícios e a Corrida dentro da Academia.
+// Troca entre os exercícios e a Corrida.
 function setGymView(view) {
   if (gymView === 'run' && view !== 'run') leaveRun();
   gymView = view;
@@ -1200,14 +1515,59 @@ function setGymView(view) {
   window.scrollTo(0, 0);
 }
 
+// Exercícios do treino escolhido, Corrida, ou a tela de boas-vindas quando
+// ainda não há treino nenhum.
 function applyGymView() {
+  if (gymView === 'run' && !moduleOn('run')) gymView = 'lift';
   const run = gymView === 'run';
-  ['sessionBar', 'exerciseList', 'gymFinishWrap'].forEach(id => { document.getElementById(id).hidden = run; });
+  const empty = !run && !currentDay;
+  document.getElementById('sessionBar').hidden = run || empty;
+  document.getElementById('exerciseList').hidden = run || empty;
+  document.getElementById('gymFinishWrap').hidden = run || empty;
   document.getElementById('runRoot').hidden = !run;
+  document.getElementById('gymWelcome').hidden = !empty;
   document.getElementById('menuBtn').setAttribute('aria-label', run ? 'Progresso da corrida' : 'Menu e Estatísticas');
   if (run) renderRun();
+  if (empty) renderWelcome();
   updateHeaderTitle();
   renderDaySelectors();
+}
+
+// Instalação nova: escolher um modelo pronto ou criar do zero, e ligar os
+// módulos opcionais.
+function renderWelcome() {
+  document.getElementById('gymWelcome').innerHTML = `
+    <section class="welcome">
+      <h2>Monte seu treino</h2>
+      <p>Comece com um modelo pronto ou crie do zero. Depois dá para mudar tudo: nome, cor, exercícios e séries.</p>
+      ${templatesHtml()}
+      <button type="button" class="save-btn welcome-new" data-welcome-new>Criar treino do zero</button>
+      <div class="welcome-modules">
+        <span class="welcome-modules-title">Também quer usar?</span>
+        ${MODULES.map(m => `<button type="button" class="module-chip ${moduleOn(m.id) ? 'on' : ''}" data-module-toggle="${m.id}" aria-pressed="${moduleOn(m.id)}">${m.name}</button>`).join('')}
+      </div>
+    </section>`;
+}
+
+function bindWelcome() {
+  document.getElementById('gymWelcome').addEventListener('click', e => {
+    const template = e.target.closest('[data-template]');
+    if (template) {
+      const first = applyTemplate(template.dataset.template);
+      if (!first) return;
+      selectDay(first);
+      refreshGymScreen();
+      return;
+    }
+    if (e.target.closest('[data-welcome-new]')) { newWorkoutFlow(); return; }
+    const mod = e.target.closest('[data-module-toggle]');
+    if (mod) setModule(mod.dataset.moduleToggle, !moduleOn(mod.dataset.moduleToggle));
+  });
+  // Módulo ligado/desligado (aqui ou em Configurações): redesenha o que depende dele.
+  document.addEventListener('treino:modules', () => {
+    applyGymView();
+    renderModuleSettings();
+  });
 }
 
 // Corrida registrada, corrigida ou apagada.
@@ -1262,8 +1622,10 @@ function todaySetEntries(day, exercise) {
 // Com muitas séries a bolinha fica estreita demais para "45×10": mostra só o ✓.
 const DOT_VALUES_MAX_SETS = 5;
 
-function setDotContent(entry, totalSets) {
+function setDotContent(entry, totalSets, type = 'load') {
   if (!entry || totalSets > DOT_VALUES_MAX_SETS) return '✓';
+  if (type === 'time') return `<span class="set-dot-value">${entry.reps}s</span>`;
+  if (type === 'reps') return `<span class="set-dot-value">${entry.reps}</span>`;
   const load = entry.unit === 'placas' ? `${entry.weight}pl` : `${entry.weight}`;
   // Fonte menor com 4 ou 5 bolinhas, para "42.5×10" caber numa linha só.
   return `<span class="set-dot-value ${totalSets > 3 ? 'small' : ''}">${load}×${entry.reps}</span>`;
@@ -1289,6 +1651,8 @@ const REGISTER_DEBOUNCE_MS = 700;
 const lastRegisterAt = new Map();
 
 function buildExerciseCardHTML(day, exercise) {
+  // load: carga × reps; reps: só repetições; time: segundos (com contagem).
+  const type = exerciseType(exercise);
   const savedData = loadProgress(day, exercise);
   const currentUnit = savedData.unit || getLastUsedUnit(exercise);
   const setsCompleted = getSetsCompleted(day, exercise);
@@ -1306,18 +1670,19 @@ function buildExerciseCardHTML(day, exercise) {
   for (let i = 0; i < dotCount; i++) {
     const filled = setsCompleted.includes(i);
     dotsHtml += filled
-      ? `<button type="button" class="set-dot filled" data-set-index="${i}" aria-label="Editar série ${i + 1}">${setDotContent(entries.get(i), dotCount)}</button>`
+      ? `<button type="button" class="set-dot filled" data-set-index="${i}" aria-label="Editar série ${i + 1}">${setDotContent(entries.get(i), dotCount, type)}</button>`
       : `<button type="button" class="set-dot" data-set-index="${i}" aria-label="Registrar série ${i + 1}">${i + 1}</button>`;
   }
   // Previstas feitas: o botão vira "Série extra" (antes travava em "Séries concluídas").
   const canRegister = nextFreeSetIndex(day, exercise) >= 0;
-  // Ícone de evolução só com histórico (sem registro, o gráfico abria outro exercício).
-  const hasHistory = loadHistory(exercise).length > 0;
   const notesDisplay = savedData.notes ? 'none' : 'flex';
   const notesVisibleClass = savedData.notes ? 'visible' : '';
   const notesValue = String(savedData.notes || '').replace(/"/g, '&quot;');
   const isExpanded = expandedExerciseId === id;
-  const prBadgeHtml = pr ? `<span class="pr-badge" role="button" tabindex="0" onclick="event.stopPropagation(); openEvolutionFor('${exArg}')">PR: ${formatLoad(pr.weight, pr.unit || 'kg')}×${pr.reps}</span>` : '';
+  const prText = type === 'load' ? `${formatLoad(pr ? pr.weight : 0, pr ? pr.unit || 'kg' : 'kg')}×${pr ? pr.reps : 0}` : pr ? setText(exercise, pr) : '';
+  const prBadgeHtml = pr ? `<span class="pr-badge" role="button" tabindex="0" onclick="event.stopPropagation(); openEvolutionFor('${exArg}')">PR: ${prText}</span>` : '';
+  // Gráfico de evolução do exercício (só aparece depois do primeiro registro).
+  const evoBtnHtml = loadHistory(exercise).length ? `<button type="button" class="info-icon evo-icon" aria-label="Evolução de ${exercise}" onclick="event.stopPropagation(); openEvolutionFor('${exArg}')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline><polyline points="17 6 23 6 23 12"></polyline></svg></button>` : '';
   const progText = skipped ? 'Pulado hoje' : `${doneCount}/${totalSets} séries concluídas`;
   const unitToggleHtml = `
             <div class="unit-toggle" id="unitToggle-${id}" role="group" aria-label="Unidade de carga">
@@ -1329,19 +1694,22 @@ function buildExerciseCardHTML(day, exercise) {
     ? `<button type="button" class="save-btn secondary-btn" id="unskip-${id}">Voltar para o treino</button>`
     : `
             <div class="set-tracker" id="tracker-${id}">${dotsHtml}</div>
-            ${unitToggleHtml}
+            ${type === 'load' ? unitToggleHtml : ''}
             <div class="input-row">
-              <div class="input-group"><label id="weightLabel-${id}">Carga (${unitLabel(currentUnit)})</label><input type="number" inputmode="decimal" enterkeyhint="next" id="weight-${id}" value="${savedData.weight}" placeholder="40"></div>
-              <div class="input-group"><label>Reps</label><input type="number" inputmode="numeric" enterkeyhint="done" id="reps-${id}" value="${savedData.reps}" placeholder="10"></div>
+              ${type === 'load'
+                ? `<div class="input-group"><label id="weightLabel-${id}">Carga (${unitLabel(currentUnit)})</label><input type="number" inputmode="decimal" enterkeyhint="next" id="weight-${id}" value="${savedData.weight}" placeholder="40"></div>`
+                : `<input type="hidden" id="weight-${id}" value="0">`}
+              <div class="input-group"><label id="repsLabel-${id}">${REPS_LABEL[type]}</label><input type="number" inputmode="numeric" enterkeyhint="done" id="reps-${id}" value="${savedData.reps}" placeholder="${type === 'time' ? '30' : '10'}"></div>
             </div>
             <div class="card-actions">
               <button class="save-btn ${isDone ? 'extra-set-btn' : ''}" id="save-${id}" ${canRegister ? '' : 'disabled'}>${!isDone ? 'Registrar série' : canRegister ? 'Série extra' : 'Séries concluídas'}</button>
+              ${type === 'time' ? `<button type="button" class="rest-btn-trigger count-btn" id="count-${id}" aria-label="Contar o tempo e registrar">${COUNT_ICON.play}</button>` : ''}
               <button class="rest-btn-trigger" id="rest-${id}" aria-label="Iniciar descanso"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg></button>
             </div>
             <div class="card-links">
               <button class="add-notes-btn" style="display: ${notesDisplay};" id="toggle-notes-${id}">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M12 5v14M5 12h14"/></svg>
-                Ajustes de máquina
+                ${type === 'load' ? 'Ajustes de máquina' : 'Anotação'}
               </button>
               ${isDone ? '' : `<button type="button" class="skip-btn" id="skip-${id}">Pular hoje</button>`}
             </div>
@@ -1352,18 +1720,12 @@ function buildExerciseCardHTML(day, exercise) {
   return `
     <div class="exercise-card ${isDone ? 'done' : ''} ${skipped ? 'skipped' : ''} ${isExpanded ? 'expanded' : ''}" data-card-id="${id}" data-day="${day}" data-exercise="${exercise}">
       <div class="exercise-header" role="button" tabindex="0" aria-expanded="${isExpanded}" onclick="toggleAccordion('${id}', '${day}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleAccordion('${id}', '${day}');}">
+        ${thumbHtml(db[exercise], exercise, 'data-ex-guide')}
         <div class="exercise-info">
-          <div class="exercise-title-row">
-            <span class="exercise-title">${exercise}</span>
-            <div class="exercise-title-actions">
-              ${hasHistory ? `<button class="info-icon" aria-label="Ver evolução" onclick="event.stopPropagation(); openEvolutionFor('${exArg}')">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline><polyline points="17 6 23 6 23 12"></polyline></svg>
-              </button>` : ''}
-              <button class="info-icon" aria-label="Ver guia do exercício" onclick="event.stopPropagation(); showExerciseGuide('${exArg}')">?</button>
-            </div>
-          </div>
+          <span class="exercise-title">${exercise}</span>
           <span class="exercise-prog"><span>${progText}</span>${skipped ? `<button type="button" class="unskip-chip" id="unskipChip-${id}">Voltar para o treino</button>` : prBadgeHtml}</span>
         </div>
+        ${evoBtnHtml}
         <svg class="exercise-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
       </div>
       <div class="exercise-wrapper">
@@ -1374,6 +1736,63 @@ function buildExerciseCardHTML(day, exercise) {
       </div>
     </div>
   `;
+}
+
+const REPS_LABEL = { load: 'Reps', reps: 'Repetições', time: 'Tempo (segundos)' };
+const COUNT_ICON = {
+  play: '<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.5-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/></svg>',
+  stop: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>'
+};
+
+// Exercício de tempo (prancha, alongamento): ▶ dá 5 s para se posicionar, conta
+// o tempo do campo e registra a série sozinho no fim, com bipe e vibração.
+const GYM_COUNT_PREP_MS = 5000;
+const gymCountdown = { id: null, handle: null };
+
+function stopGymCountdown() {
+  if (gymCountdown.handle) clearInterval(gymCountdown.handle);
+  const { id } = gymCountdown;
+  gymCountdown.id = null;
+  gymCountdown.handle = null;
+  setAwake('gym-count', false);
+  if (!id) return;
+  const label = document.getElementById(`repsLabel-${id}`);
+  const btn = document.getElementById(`count-${id}`);
+  if (label) label.textContent = REPS_LABEL.time;
+  if (btn) { btn.innerHTML = COUNT_ICON.play; btn.setAttribute('aria-label', 'Contar o tempo e registrar'); }
+  const card = btn && btn.closest('.exercise-card');
+  if (card) delete card.dataset.counting;
+}
+
+function startGymCountdown(id) {
+  stopGymCountdown();
+  const input = document.getElementById(`reps-${id}`);
+  const target = Math.round(parseNum(input.value)) || Math.round(parseNum(input.placeholder));
+  if (!(target > 0)) return;
+  input.value = String(target);
+  primeAlert();
+  setAwake('gym-count', true);
+  const prepEnd = Date.now() + GYM_COUNT_PREP_MS;
+  const end = prepEnd + target * 1000;
+  gymCountdown.id = id;
+  const btn = document.getElementById(`count-${id}`);
+  btn.innerHTML = COUNT_ICON.stop;
+  btn.setAttribute('aria-label', 'Parar a contagem');
+  btn.closest('.exercise-card').dataset.counting = '1';
+  const tick = () => {
+    const label = document.getElementById(`repsLabel-${id}`);
+    if (!label) { stopGymCountdown(); return; }
+    const now = Date.now();
+    if (now < prepEnd) { label.textContent = `Prepare-se · ${Math.ceil((prepEnd - now) / 1000)}`; return; }
+    const left = Math.ceil((end - now) / 1000);
+    if (left > 0) { label.textContent = `Segure · ${left}s`; return; }
+    stopGymCountdown();
+    alertTimerEnd();
+    document.getElementById(`reps-${id}`).value = String(target);
+    document.getElementById(`save-${id}`).click();
+  };
+  gymCountdown.handle = setInterval(tick, 200);
+  tick();
 }
 
 function setCardUnit(id, unit) {
@@ -1408,14 +1827,15 @@ function updateLoggedSet(day, exercise, setIndex, weight, reps, unit) {
 function openLoggedSetEditor(day, exercise, setIndex) {
   const entry = todaySetEntries(day, exercise).get(setIndex);
   const unit = entry ? entry.unit || 'kg' : getLastUsedUnit(exercise);
+  const type = exerciseType(exercise);
+  const repsField = { key: 'reps', label: REPS_LABEL[type], value: entry ? entry.reps : '', inputmode: 'numeric' };
   openSetEditor({
     title: `Série ${setIndex + 1}`,
     subtitle: exercise,
-    fields: [
-      { key: 'weight', label: `Carga (${unitLabel(unit)})`, value: entry ? entry.weight : '', inputmode: 'decimal' },
-      { key: 'reps', label: 'Reps', value: entry ? entry.reps : '', inputmode: 'numeric' }
-    ],
-    onSave: ({ weight, reps }) => {
+    fields: type === 'load'
+      ? [{ key: 'weight', label: `Carga (${unitLabel(unit)})`, value: entry ? entry.weight : '', inputmode: 'decimal' }, repsField]
+      : [repsField],
+    onSave: ({ weight = '0', reps }) => {
       const w = parseNum(weight);
       const r = Math.round(parseNum(reps));
       // Carga 0 vale (peso do corpo), igual ao registrar — antes a série com
@@ -1432,6 +1852,16 @@ function bindExerciseCardEvents(day, exercise) {
   const id = safeId(exercise) + safeId(day);
   const card = exerciseListContainer.querySelector(`[data-card-id="${id}"]`);
   if (!card) return;
+  const thumb = card.querySelector('[data-ex-guide]');
+  if (thumb) {
+    thumb.addEventListener('click', e => { e.stopPropagation(); showExerciseGuide(exercise); });
+    thumb.addEventListener('keydown', e => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      e.preventDefault();
+      e.stopPropagation();
+      showExerciseGuide(exercise);
+    });
+  }
   const unskip = () => setSkipped(day, exercise, false);
   const unskipChip = card.querySelector(`#unskipChip-${id}`);
   if (unskipChip) unskipChip.addEventListener('click', (e) => { e.stopPropagation(); unskip(); });
@@ -1517,9 +1947,10 @@ function bindExerciseCardEvents(day, exercise) {
       void missing.offsetWidth;
       missing.classList.add('input-missing');
       missing.focus();
-      showToast('Falta preencher', missing === weightInput ? 'Digite a carga da série.' : 'Digite quantas repetições fez.');
+      showToast('Falta preencher', missing === weightInput ? 'Digite a carga da série.' : exerciseType(exercise) === 'time' ? 'Digite o tempo em segundos.' : 'Digite quantas repetições fez.');
       return;
     }
+    if (gymCountdown.id === id) stopGymCountdown();
     // Toque duplo sem querer registrava duas séries de uma vez.
     if (Date.now() - (lastRegisterAt.get(exercise) || 0) < REGISTER_DEBOUNCE_MS) return;
     lastRegisterAt.set(exercise, Date.now());
@@ -1544,6 +1975,8 @@ function bindExerciseCardEvents(day, exercise) {
     startRestFor(exercise);
   });
   document.getElementById(`rest-${id}`).addEventListener('click', () => { startRestFor(exercise); });
+  const countBtn = card.querySelector(`#count-${id}`);
+  if (countBtn) countBtn.addEventListener('click', () => (gymCountdown.id === id ? stopGymCountdown() : startGymCountdown(id)));
 }
 
 function updateExerciseCard(day, exercise) {
@@ -1574,11 +2007,16 @@ function refreshIfNewDay() {
 
 function renderExercises(day) {
   renderedDate = todayString();
-  ensureFreshSessionAnchor(day);
   exerciseListContainer.innerHTML = '';
+  if (!day || !workoutData[day]) return;
+  ensureFreshSessionAnchor(day);
   const exercises = workoutData[day].exercises;
   if (exercises.length === 0) {
-    exerciseListContainer.innerHTML = '<div style="text-align:center; color:var(--text-dim); padding: 40px 0;">Treino em construção.</div>';
+    exerciseListContainer.innerHTML = `<div class="workout-empty">
+      <p>Esse treino ainda não tem exercícios.</p>
+      <button type="button" class="save-btn" data-edit-workout>Escolher exercícios</button>
+    </div>`;
+    exerciseListContainer.querySelector('[data-edit-workout]').addEventListener('click', () => openPlanEditor(day));
     return;
   }
   exerciseListContainer.innerHTML = exercises.map(ex => buildExerciseCardHTML(day, ex)).join('');
@@ -1655,7 +2093,7 @@ function getLoggedWorkoutsByDate() {
 }
 
 // Ordem no calendário e no detalhe do dia: Superior, Inferior, Corrida.
-function dayOrder(day) { return day === RUN_DAY ? orderedDays.length : orderedDays.indexOf(day); }
+function dayOrder(day) { return day === RUN_DAY ? days.length : days.indexOf(day); }
 
 function getWorkoutsForDate(dateStr) {
   const set = getLoggedWorkoutsByDate().get(dateStr);
@@ -1739,7 +2177,7 @@ function openDayDetail(dateStr) {
       });
       const progress = getDayProgress(item.exercise, dateStr);
       if (progress && progress.isPR) dayPRs.push({ exercise: item.exercise, ...progress });
-      item.sets.forEach((s, i) => { setsHtml += `<span class="evo-set-chip ${i === bestIdx ? 'best' : ''}">${formatLoad(s.weight, s.unit || 'kg')} <span class="evo-set-chip-x">×</span> ${s.reps}</span>`; });
+      item.sets.forEach((s, i) => { setsHtml += `<span class="evo-set-chip ${i === bestIdx ? 'best' : ''}">${setChipHtml(item.exercise, s)}</span>`; });
       html += `<div class="day-detail-ex" style="--day-color: ${getDayColor(w.day)}">
         <div class="day-detail-ex-head">
           <div class="day-detail-ex-name">${item.exercise}</div>
@@ -1755,7 +2193,7 @@ function openDayDetail(dateStr) {
     prsHtml = `
       <div class="summary-prs">
         <div class="summary-prs-label">🏆 Recordes desse dia</div>
-        ${dayPRs.map(pr => `<div class="summary-pr-row"><span>${pr.exercise}</span><span class="summary-pr-value">${formatLoad(pr.best.weight, pr.unit)} × ${pr.best.reps}<span class="summary-pr-prev">antes ${formatLoad(pr.prevRecord.weight, pr.unit)} × ${pr.prevRecord.reps}</span></span></div>`).join('')}
+        ${dayPRs.map(pr => `<div class="summary-pr-row"><span>${pr.exercise}</span><span class="summary-pr-value">${setText(pr.exercise, pr.best, pr.unit)}<span class="summary-pr-prev">antes ${setText(pr.exercise, pr.prevRecord, pr.unit)}</span></span></div>`).join('')}
       </div>`;
   }
   dayDetailBody.innerHTML = prsHtml + dayMusclesHtml(trained) + html;
@@ -1814,11 +2252,9 @@ function bindDayDetailModal() {
 }
 
 // Cor de cada treino no calendário, no detalhe do dia e na legenda.
-const CAL_DAY_COLORS = ['#8b5cf6', '#3b82f6', '#ec4899', '#f97316', '#14b8a6'];
 function getDayColor(dayName) {
   if (dayName === RUN_DAY) return RUN_COLOR;
-  const idx = Math.max(0, days.indexOf(dayName));
-  return CAL_DAY_COLORS[idx % CAL_DAY_COLORS.length];
+  return (workoutData[dayName] && workoutData[dayName].color) || WORKOUT_COLORS[0];
 }
 let calMonthOffset = 0;
 
@@ -1865,7 +2301,7 @@ function renderCalendarModal() {
     ])}
     ${monthNavHtml(year, month, calMonthOffset === 0)}
     ${monthCalendarHtml(year, month, calDays)}
-    ${calendarLegendHtml([...orderedDays, RUN_DAY].map(d => ({ color: getDayColor(d), label: dayLabel(d) })))}
+    ${calendarLegendHtml([...activeDays(), ...(moduleOn('run') ? [RUN_DAY] : [])].map(d => ({ color: getDayColor(d), label: dayLabel(d) })))}
     ${yearSummaryHtml(year, yearDays)}
   `;
 }
@@ -2155,9 +2591,13 @@ function renderEvolutionContent(exercise) {
   const bodyweight = history.every(h => !h.weight);
   const delta = bodyweight ? pr.reps - firstSet.reps : Math.round((pr.weight - firstSet.weight) * 100) / 100;
   const progressClass = sessions.length < 2 ? 'flat' : (delta > 0 ? 'pos' : (delta < 0 ? 'neg' : 'flat'));
-  const deltaText = bodyweight ? `${delta} rep${Math.abs(delta) === 1 ? '' : 's'}` : formatLoad(delta, evoSelectedUnit);
-  const progressLabel = sessions.length < 2 ? '—' : `${delta > 0 ? '+' : ''}${deltaText}`;
-  const heroHtml = bodyweight
+  const isTime = exerciseType(exercise) === 'time';
+  const deltaText = isTime ? fmtSeconds(Math.abs(delta)) : bodyweight ? `${Math.abs(delta)} rep${Math.abs(delta) === 1 ? '' : 's'}` : formatLoad(Math.abs(delta), evoSelectedUnit);
+  const progressLabel = sessions.length < 2 ? '—' : `${delta > 0 ? '+' : delta < 0 ? '−' : ''}${deltaText}`;
+  const heroHtml = isTime
+    ? `<div class="evo-stat-value">${fmtSeconds(pr.reps)}</div>
+        <div class="evo-stat-label">PR atual</div>`
+    : bodyweight
     ? `<div class="evo-stat-value">${pr.reps}<span class="evo-stat-unit">reps</span></div>
         <div class="evo-stat-label">PR atual · peso do corpo</div>`
     : `<div class="evo-stat-value">${pr.weight}<span class="evo-stat-unit">${unitLabel(evoSelectedUnit)}</span></div>
@@ -2241,7 +2681,7 @@ function renderEvolutionContent(exercise) {
     }
     let setsHtml = '';
     session.sets.forEach((s, i) => {
-      setsHtml += `<span class="evo-set-chip ${i === bestIdx ? 'best' : ''}">${formatLoad(s.weight, evoSelectedUnit)} <span class="evo-set-chip-x">×</span> ${s.reps}</span>`;
+      setsHtml += `<span class="evo-set-chip ${i === bestIdx ? 'best' : ''}">${setChipHtml(exercise, s, evoSelectedUnit)}</span>`;
     });
     return `
       <div class="evo-session-card">
@@ -2293,7 +2733,7 @@ function renderEvolutionContent(exercise) {
         session.sets.forEach((s, i) => {
           if (isBetterSet(s, session.sets[bestIdx])) bestIdx = i;
         });
-        const setsHtml = session.sets.map((s, i) => `<div class="evo-set-block ${i === bestIdx ? 'best' : ''}"><span class="evo-set-label">S${i + 1}</span><span class="evo-set-value">${formatLoad(s.weight, evoSelectedUnit)} <span class="evo-set-chip-x">×</span> ${s.reps}</span></div>`).join('');
+        const setsHtml = session.sets.map((s, i) => `<div class="evo-set-block ${i === bestIdx ? 'best' : ''}"><span class="evo-set-label">S${i + 1}</span><span class="evo-set-value">${setChipHtml(exercise, s, evoSelectedUnit)}</span></div>`).join('');
         tooltip.innerHTML = `
           <div class="evo-tooltip-header">
             <div class="evo-tooltip-date">${p.date}</div>
@@ -2310,52 +2750,125 @@ function renderEvolutionContent(exercise) {
   }
 }
 
+// Catálogo: navegar (tocar abre o guia) ou escolher um exercício para um
+// treino (pickFor + onPick, vindo de Meus Treinos). Busca sem acento e filtro
+// por grupo; cada item mostra como é registrado (carga, reps ou tempo).
+// multi: tocar marca/desmarca e a barra "Adicionar N" entrega a lista em onPick
+// (sem multi, o toque já escolhe). onConfigure: toque num exercício que já está no treino.
+let catalogState = { pickFor: null, onPick: null, group: 'Todos', multi: false, selected: [], onConfigure: null };
+
+function openCatalog({ pickFor = null, title = 'Catálogo', onPick = null, multi = false, onConfigure = null } = {}) {
+  catalogState = { pickFor, onPick, group: 'Todos', multi, selected: [], onConfigure };
+  document.getElementById('catalogTitle').textContent = title;
+  renderCatalogTab();
+  catalogModal.classList.add('visible');
+  catalogModalContent.scrollTop = 0;
+}
+
+function catalogGroupOf(ex) { return db[ex].custom ? 'Meus' : db[ex].cat; }
+
 function renderCatalogTab() {
   if (!catalogModalContent) return;
+  const { pickFor } = catalogState;
+  const inWorkout = new Set(pickFor && workoutData[pickFor] ? workoutData[pickFor].exercises : []);
   const grouped = {};
-  for (const ex in db) {
-    const cat = db[ex].cat;
-    if (!grouped[cat]) grouped[cat] = [];
-    grouped[cat].push(ex);
-  }
-  let html = `
+  Object.keys(db).forEach(ex => { (grouped[catalogGroupOf(ex)] = grouped[catalogGroupOf(ex)] || []).push(ex); });
+  const groups = [...CATALOG_GROUPS, 'Meus', ...Object.keys(grouped)].filter((g, i, all) => grouped[g] && all.indexOf(g) === i);
+  const chips = ['Todos', ...groups].map(g => `<button type="button" class="catalog-chip ${g === catalogState.group ? 'active' : ''}" data-catalog-group="${g}">${g === 'Meus' ? 'Criados por você' : g}</button>`).join('');
+  const chevron = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>';
+  const itemHtml = ex => {
+    const tag = TYPE_TAG[exerciseType(ex)];
+    const added = inWorkout.has(ex);
+    const value = ex.replace(/"/g, '&quot;');
+    const configurable = added && catalogState.onConfigure;
+    const side = !pickFor ? chevron
+      : added ? `<span class="catalog-added">no treino${configurable ? planIcon.edit : ''}</span>`
+      : '<span class="catalog-plus" aria-hidden="true">+</span>';
+    const label = !pickFor ? `Ver ${value}`
+      : configurable ? `Configurar ${value}, já está no treino`
+      : added ? `${value}, já está no treino` : `Adicionar ${value}`;
+    return `
+      <div class="catalog-item ${added ? 'added' : ''} ${configurable ? 'configurable' : ''}" data-ex="${value}" data-name="${searchKey(ex)}" role="button" tabindex="0" aria-label="${label}"${pickFor && !added && catalogState.multi ? ' aria-pressed="false"' : ''}>
+        ${thumbHtml(db[ex], ex, pickFor ? `data-guide="${value}"` : '', { small: true, interactive: !!pickFor })}
+        <span class="catalog-item-name">${ex}${tag ? ` <small class="type-tag">${tag}</small>` : ''}</span>
+        ${side}
+      </div>`;
+  };
+  catalogModalContent.innerHTML = `
     <div class="catalog-search-wrap">
       <svg class="catalog-search-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
-      <input type="text" id="catalogSearchInput" class="catalog-search-input" placeholder="Buscar exercício...">
+      <input type="text" id="catalogSearchInput" class="catalog-search-input" placeholder="Buscar exercício..." autocomplete="off">
     </div>
+    <nav class="catalog-chips" aria-label="Grupos">${chips}</nav>
     <div id="catalogList">
-  `;
-  for (const cat in grouped) {
-    html += `<div class="catalog-category" data-cat="${cat}">
-      <div class="catalog-cat-title">${cat}</div><div class="catalog-grid">`;
-    grouped[cat].forEach(ex => {
-      const exEsc = ex.replace(/'/g, "\\'");
-      html += `
-        <div class="catalog-item" data-name="${searchKey(ex)}" onclick="showExerciseGuide('${exEsc}')">
-          <span>${ex}</span>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
-        </div>`;
+      ${groups.map(g => `<div class="catalog-category" data-cat="${g}">
+        <div class="catalog-cat-title">${g === 'Meus' ? 'Criados por você' : g}</div>
+        <div class="catalog-grid">${grouped[g].map(itemHtml).join('')}</div>
+      </div>`).join('')}
+    </div>
+    <p class="plan-empty" id="catalogEmpty" hidden>Nenhum exercício encontrado.</p>
+    ${catalogState.multi ? '<div class="catalog-pick-bar" hidden><button type="button" id="catalogPickDone" class="save-btn"></button></div>' : ''}`;
+  document.getElementById('catalogSearchInput').addEventListener('input', filterCatalog);
+  filterCatalog();
+}
+
+function filterCatalog() {
+  const input = document.getElementById('catalogSearchInput');
+  const term = searchKey(input ? input.value.trim() : '');
+  let anyVisible = false;
+  catalogModalContent.querySelectorAll('.catalog-category').forEach(catEl => {
+    const groupOk = catalogState.group === 'Todos' || catEl.dataset.cat === catalogState.group;
+    let hasVisible = false;
+    catEl.querySelectorAll('.catalog-item').forEach(item => {
+      const match = groupOk && item.dataset.name.includes(term);
+      item.style.display = match ? 'flex' : 'none';
+      if (match) hasVisible = true;
     });
-    html += `</div></div>`;
-  }
-  html += `</div><p class="plan-empty" id="catalogEmpty" hidden>Nenhum exercício encontrado.</p>`;
-  catalogModalContent.innerHTML = html;
-  
-  const searchInput = document.getElementById('catalogSearchInput');
-  searchInput.addEventListener('input', (e) => {
-    const term = searchKey(e.target.value.trim());
-    let anyVisible = false;
-    catalogModalContent.querySelectorAll('.catalog-category').forEach(catEl => {
-      let hasVisible = false;
-      catEl.querySelectorAll('.catalog-item').forEach(item => {
-        const match = item.dataset.name.includes(term);
-        item.style.display = match ? 'flex' : 'none';
-        if (match) hasVisible = true;
-      });
-      catEl.style.display = hasVisible ? 'block' : 'none';
-      if (hasVisible) anyVisible = true;
-    });
-    document.getElementById('catalogEmpty').hidden = anyVisible;
+    catEl.style.display = hasVisible ? 'block' : 'none';
+    if (hasVisible) anyVisible = true;
+  });
+  document.getElementById('catalogEmpty').hidden = anyVisible;
+}
+
+function bindCatalog() {
+  const activate = (e) => {
+    const chip = e.target.closest('[data-catalog-group]');
+    if (chip) {
+      catalogState.group = chip.dataset.catalogGroup;
+      catalogModalContent.querySelectorAll('.catalog-chip').forEach(c => c.classList.toggle('active', c === chip));
+      filterCatalog();
+      return;
+    }
+    const guide = e.target.closest('[data-guide]');
+    if (guide) { showExerciseGuide(guide.dataset.guide); return; }
+    const { onPick, onConfigure, selected } = catalogState;
+    if (e.target.closest('#catalogPickDone')) {
+      catalogModal.classList.remove('visible');
+      if (onPick && selected.length) onPick([...selected]);
+      return;
+    }
+    const item = e.target.closest('.catalog-item');
+    if (!item) return;
+    const ex = item.dataset.ex;
+    if (!catalogState.pickFor) { showExerciseGuide(ex); return; }
+    if (item.classList.contains('added')) { if (onConfigure) onConfigure(ex); return; }
+    if (catalogState.multi) {
+      const i = selected.indexOf(ex);
+      if (i >= 0) selected.splice(i, 1); else selected.push(ex);
+      item.classList.toggle('selected', i < 0);
+      item.setAttribute('aria-pressed', String(i < 0));
+      item.querySelector('.catalog-plus').textContent = i < 0 ? '✓' : '+';
+      const bar = catalogModalContent.querySelector('.catalog-pick-bar');
+      bar.hidden = !selected.length;
+      bar.querySelector('button').textContent = `Adicionar ${selected.length} ${selected.length === 1 ? 'exercício' : 'exercícios'}`;
+      return;
+    }
+    catalogModal.classList.remove('visible');
+    if (onPick) onPick([ex]);
+  };
+  catalogModalContent.addEventListener('click', activate);
+  catalogModalContent.addEventListener('keydown', e => {
+    if ((e.key === 'Enter' || e.key === ' ') && e.target.classList.contains('catalog-item')) { e.preventDefault(); activate(e); }
   });
 }
 
@@ -2373,7 +2886,7 @@ function renderCategorizedStats() {
     const prev = sessionBests.length > 1 ? sessionBests[sessionBests.length - 2] : null;
     let trend = '<span class="stat-trend">1º treino</span>';
     if (prev) {
-      const delta = describeLoadDelta(last, prev, lastUnit);
+      const delta = describeLoadDelta(last, prev, lastUnit, exerciseType(ex));
       const arrow = { up: '↑', down: '↓', same: '=' }[delta.dir];
       trend = `<span class="stat-trend ${delta.dir === 'same' ? '' : delta.dir}">${delta.dir === 'same' ? '= igual ao anterior' : `${arrow} ${delta.text.replace(/^[+-]/, '')} vs anterior`}</span>`;
     }
@@ -2403,7 +2916,7 @@ function renderCategorizedStats() {
         <div class="stat-row" role="button" tabindex="0" onclick="openEvolutionFor('${exEsc}')" onkeydown="if(event.key==='Enter'){openEvolutionFor('${exEsc}')}">
           <div><div class="stat-name">${row.ex}</div><div class="stat-sub">${row.trend}</div></div>
           ${row.sparkline ? `<div class="stat-spark">${row.sparkline}</div>` : ''}
-          <div class="stat-value">${formatLoad(row.last.weight, row.last.unit || 'kg')} × ${row.last.reps}</div>
+          <div class="stat-value">${setText(row.ex, row.last, row.last.unit || 'kg')}</div>
         </div>`;
     });
     html += `
@@ -2546,13 +3059,48 @@ function migrateWorkoutDate(day, fromDate, toDate) {
   return true;
 }
 
+// Lista de treinos do "Corrigir data" (muda quando o usuário cria ou apaga treinos).
+function refreshFixDaySelect() {
+  const select = document.getElementById('fixDaySelect');
+  if (!select) return;
+  const keep = select.value;
+  select.innerHTML = activeDays().map(d => `<option value="${d}">${dayLabel(d)}</option>`).join('');
+  if (activeDays().includes(keep)) select.value = keep;
+}
+
+// Configurações › Módulos: liga e desliga Calistenia, Mobilidade e Corrida.
+function renderModuleSettings() {
+  const box = document.getElementById('moduleSettings');
+  if (!box) return;
+  box.innerHTML = MODULES.map(m => `
+    <label class="module-row">
+      <span class="module-text"><strong>${m.name}</strong><small>${m.desc}</small></span>
+      <input type="checkbox" class="module-switch" data-module="${m.id}" ${moduleOn(m.id) ? 'checked' : ''}>
+    </label>`).join('');
+}
+
+function bindModuleSettings() {
+  const box = document.getElementById('moduleSettings');
+  if (!box) return;
+  renderModuleSettings();
+  box.addEventListener('change', e => {
+    const input = e.target.closest('[data-module]');
+    if (!input) return;
+    setModule(input.dataset.module, input.checked);
+    trySync();
+    showToast(input.checked ? 'Módulo ligado' : 'Módulo desligado', input.checked
+      ? 'Ele aparece no topo da tela.'
+      : 'Os registros dele continuam guardados; é só ligar de novo para ver.');
+  });
+}
+
 function bindDateFixTool() {
   const select = document.getElementById('fixDaySelect');
   const fromInput = document.getElementById('fixFromDate');
   const toInput = document.getElementById('fixToDate');
   const btn = document.getElementById('fixDateBtn');
   if (!select || !btn) return;
-  select.innerHTML = orderedDays.map(d => `<option value="${d}">${dayLabel(d)}</option>`).join('');
+  refreshFixDaySelect();
   btn.addEventListener('click', async () => {
     const day = select.value;
     const fromDate = fromInput.value;
@@ -2579,23 +3127,32 @@ function bindDateFixTool() {
 
 function bindBackupSystem() {
   const syncDisplay = document.getElementById('syncIdDisplay');
-  if (syncDisplay) syncDisplay.innerText = syncId;
+  if (syncDisplay) syncDisplay.innerText = formatSyncCode(syncId);
+  // Quem tinha um código curto (até a 2.6) ganhou um novo: avisa qual era.
+  const oldCode = localStorage.getItem('syncId:antigo');
+  const oldNote = document.getElementById('syncOldCode');
+  if (oldCode && oldNote) {
+    oldNote.hidden = false;
+    oldNote.textContent = `Código antigo: ${oldCode}. O backup agora vai para o código novo, mais seguro; o antigo ainda pode ser baixado.`;
+  }
   updateSyncStatus();
 
   // Tocar no código copia (para anotar ou mandar para o outro celular).
   document.getElementById('syncCodeBox').addEventListener('click', async () => {
     try {
-      await navigator.clipboard.writeText(syncId);
-      showToast('Código copiado', `${syncId} está na área de transferência.`);
+      await navigator.clipboard.writeText(formatSyncCode(syncId));
+      showToast('Código copiado', `${formatSyncCode(syncId)} está na área de transferência.`);
     } catch (e) {
-      showToast('Seu código', syncId);
+      showToast('Seu código', formatSyncCode(syncId));
     }
   });
-  // Abrir as Configurações mostra o estado atual do backup (pendente, último envio...)
-  // e o espaço usado.
+  // Abrir as Configurações mostra o estado atual do backup (pendente, último
+  // envio...), o espaço usado, os módulos e os treinos do "Corrigir data".
   document.getElementById('configBtn').addEventListener('click', () => {
     updateSyncStatus();
     updateStorageUsage();
+    renderModuleSettings();
+    refreshFixDaySelect();
   });
 
   const syncNowBtn = document.getElementById('syncNowBtn');
@@ -2635,11 +3192,11 @@ function bindBackupSystem() {
     const code = await promptDialog({
       title: 'Baixar de outro código',
       text: 'Digite o código de sincronização do outro celular (aparece em Configurações nele).',
-      placeholder: 'ABC123',
+      placeholder: 'ABCD-EFGH-JKLM',
       confirmLabel: 'Buscar backup'
     });
     if (!code) return;
-    const upper = code.toUpperCase();
+    const upper = normalizeSyncCode(code);
     let data;
     try {
       data = await fetchCloudBackup(upper);
@@ -2742,6 +3299,8 @@ async function exportBackupFile() {
 
 window.showExerciseGuide = function (exercise) {
   const info = db[exercise];
+  // Exercício de calistenia/mobilidade: o guia deles (instruções passo a passo e ilustração).
+  if (info && info.step) { openStepGuide(info.step); return; }
   const modal = document.getElementById('infoModal');
   document.getElementById('infoTitle').innerText = exercise;
   document.getElementById('infoText').innerText = info && info.tip ? info.tip : "Foque na contração e controle do movimento.";

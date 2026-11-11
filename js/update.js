@@ -12,8 +12,12 @@ const CHECK_EVERY_MS = 30 * 60 * 1000;
 // Pode recarregar sem perder nada?
 export function isSafeToReload(doc = document) {
   if (doc.querySelector('.rest-overlay.visible')) return false;
-  if (doc.querySelector('.cali-timer[data-phase="prep"], .cali-timer[data-phase="run"], .cali-mobility-target[data-phase="prep"], .cali-mobility-target[data-phase="run"]')) return false;
-  return ![...doc.querySelectorAll('input, textarea')].some(el => el.type !== 'file' && el.value !== el.defaultValue);
+  if (doc.querySelector('.cali-timer[data-phase="prep"], .cali-timer[data-phase="run"], .cali-mobility-target[data-phase="prep"], .cali-mobility-target[data-phase="run"], .exercise-card[data-counting]')) return false;
+  // Campos de telas fechadas não contam (ex.: o nome digitado num "Novo treino"
+  // já criado continua no campo escondido da janela).
+  const closed = '.full-modal:not(.visible), .info-modal:not(.visible), .stats-sheet:not(.visible), .day-detail-modal:not(.visible), .cali-overlay:not(.visible)';
+  return ![...doc.querySelectorAll('input, textarea')].some(el =>
+    el.type !== 'file' && el.type !== 'hidden' && el.type !== 'checkbox' && !el.closest(closed) && el.value !== el.defaultValue);
 }
 
 export function initAutoUpdate() {

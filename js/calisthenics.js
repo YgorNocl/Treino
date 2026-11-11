@@ -19,6 +19,8 @@ import { confirmDialog } from './dialog.js';
 import { showSummaryModal, longDateLabel, shareOrDownload } from './summary.js';
 import { buildSummaryImage } from './share-card.js';
 import { regionLevels } from './body-map.js';
+import { moduleOn } from './modules.js';
+import { thumbHtml } from './thumb.js';
 
 const $ = id => document.getElementById(id);
 const root = $('caliRoot');
@@ -419,22 +421,15 @@ function stepCardHtml(step) {
     ? `<span class="pr-badge" role="button" tabindex="0" data-evo="${step.id}">PR: ${fmtShort(step, best)}</span>`
     : '';
   const progText = `${todaySets.length}/${step.goal.sets} séries concluídas`;
-  const trendIcon = best
-    ? `<button type="button" class="info-icon" data-evo="${step.id}" aria-label="Ver evolução">${ICONS.trend}</button>`
-    : '';
   return `
     <div class="exercise-card ${isDone ? 'done' : ''} ${isOpen ? 'expanded' : ''}" data-step-id="${step.id}">
       <div class="exercise-header" role="button" tabindex="0" aria-expanded="${isOpen}">
+        ${thumbHtml({ img: step.img, step: step.id }, step.name, `data-guide="${step.id}"`)}
         <div class="exercise-info">
-          <div class="exercise-title-row">
-            <span class="exercise-title">${step.name}</span>
-            <div class="exercise-title-actions">
-              ${trendIcon}
-              <button type="button" class="info-icon" data-guide="${step.id}" aria-label="Como fazer o exercício">?</button>
-            </div>
-          </div>
+          <span class="exercise-title">${step.name}</span>
           <span class="exercise-prog"><span>${progText}</span>${prBadge}</span>
         </div>
+        ${best && !isMobility ? `<button type="button" class="info-icon evo-icon" data-evo="${step.id}" aria-label="Evolução de ${step.name}">${ICONS.trend}</button>` : ''}
         <svg class="exercise-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
       </div>
       <div class="exercise-wrapper">
@@ -819,6 +814,20 @@ function stopClock() {
   setAwake('cali-session', false);
 }
 
+// Botões de modo só para os módulos ligados (Configurações › Módulos); com só
+// os treinos, a barra inteira some.
+function refreshModeSwitch() {
+  let anyModule = false;
+  document.querySelectorAll('#modeSwitch .mode-btn').forEach(btn => {
+    const on = btn.dataset.mode === 'gym' || moduleOn(btn.dataset.mode);
+    btn.hidden = !on;
+    if (on && btn.dataset.mode !== 'gym') anyModule = true;
+  });
+  $('modeSwitch').hidden = !anyModule;
+  const mode = currentBodyMode();
+  if (mode !== 'gym' && !moduleOn(mode)) applyMode('gym', true);
+}
+
 function init() {
   if (!root) return;
   initPanels({ getMode: () => state.mode, onDataChanged: () => render() });
@@ -831,9 +840,13 @@ function init() {
   $('caliStatsBtn').addEventListener('click', () => openProgress(state.mode));
   $('mobiCalendarBtn').addEventListener('click', () => openCalendar(state.mode));
   $('mobiStatsBtn').addEventListener('click', () => openProgress(state.mode));
-  const initialMode = store.getMode();
+  // Modo salvo de um módulo que foi desligado: abre nos treinos.
+  const savedMode = store.getMode();
+  const initialMode = savedMode === 'gym' || moduleOn(savedMode) ? savedMode : 'gym';
   state.mode = initialMode === 'mobi' ? 'mobi' : 'cali';
   applyMode(initialMode, false);
+  refreshModeSwitch();
+  document.addEventListener('treino:modules', refreshModeSwitch);
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') refreshIfNewDay();
   });

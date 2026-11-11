@@ -72,12 +72,15 @@
     </header>
 
     <div class="mode-switch" id="modeSwitch" role="tablist" aria-label="Modo de treino">
-        <button type="button" role="tab" class="mode-btn active" data-mode="gym" aria-selected="true">Academia</button>
+        <button type="button" role="tab" class="mode-btn active" data-mode="gym" aria-selected="true">Treinos</button>
         <button type="button" role="tab" class="mode-btn" data-mode="cali" aria-selected="false">Calistenia</button>
         <button type="button" role="tab" class="mode-btn" data-mode="mobi" aria-selected="false">Mobilidade</button>
     </div>
 
-    <nav class="selectors gym-only" id="daySelectors"></nav>
+    <nav class="selectors scroll gym-only" id="daySelectors" aria-label="Treinos"></nav>
+
+    <!-- Sem nenhum treino ainda (instalação nova): modelos prontos ou criar do zero. -->
+    <section id="gymWelcome" class="gym-only" hidden></section>
 
     <div class="session-bar gym-only" id="sessionBar">
         <div class="session-info">
@@ -149,7 +152,7 @@
         <button id="closeCatalog" class="icon-btn" aria-label="Voltar">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>
         </button>
-        <h2>Catálogo</h2>
+        <h2 id="catalogTitle">Catálogo</h2>
         <div style="width: 40px;"></div>
     </div>
     <div class="full-modal-content" id="catalogModalContent"></div>
@@ -187,9 +190,15 @@
     </div>
     <div class="full-modal-content settings">
         <section class="settings-card">
-            <h3>Treino da Academia</h3>
-            <p>Troque, adicione ou reordene exercícios e escolha quantas séries cada um tem. O histórico não é perdido.</p>
-            <button id="editPlanBtn" class="save-btn settings-btn">Editar Exercícios</button>
+            <h3>Meus Treinos</h3>
+            <p>Crie quantos treinos quiser, com nome e cor, e monte cada um com exercícios do catálogo. Renomear, trocar ou tirar exercícios não apaga o histórico.</p>
+            <button id="editPlanBtn" class="save-btn settings-btn">Montar e editar treinos</button>
+        </section>
+
+        <section class="settings-card">
+            <h3>Módulos</h3>
+            <p>Partes opcionais do app. Desligar só esconde: os registros continuam guardados.</p>
+            <div id="moduleSettings" class="module-list"></div>
         </section>
 
         <section class="settings-card">
@@ -199,6 +208,7 @@
                 <span class="sync-code-label">Seu código · toque para copiar</span>
                 <strong id="syncIdDisplay"></strong>
             </button>
+            <p class="sync-old-code" id="syncOldCode" hidden></p>
             <div class="sync-status" id="syncStatusRow">
                 <span class="sync-status-dot" id="syncStatusDot"></span>
                 <span id="syncStatusText">Verificando backup...</span>
@@ -259,10 +269,22 @@
         <button id="closePlan" class="icon-btn" aria-label="Voltar">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>
         </button>
-        <h2>Editar Treino</h2>
+        <h2>Meus Treinos</h2>
         <div style="width: 40px;"></div>
     </div>
     <div class="full-modal-content" id="planModalContent"></div>
+</div>
+
+<!-- Séries, carga, repetições e descanso de cada exercício de um treino. -->
+<div class="full-modal" id="exConfigModal">
+    <div class="full-modal-header">
+        <button id="closeExConfig" class="icon-btn" aria-label="Voltar">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>
+        </button>
+        <h2 id="exConfigTitle">Configurar</h2>
+        <div style="width: 40px;"></div>
+    </div>
+    <div class="full-modal-content" id="exConfigContent"></div>
 </div>
 
 <div class="info-modal" id="infoModal">

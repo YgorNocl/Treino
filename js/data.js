@@ -34,18 +34,30 @@ function loadFirestore() {
   return firestorePromise;
 }
 
-// Código de 6 caracteres sem letras/números parecidos (0/O, 1/I/L).
+// Código do backup: 12 caracteres sem letras/números parecidos (0/O, 1/I/L),
+// ~59 bits — impossível de adivinhar. Os antigos tinham 6 (dava para tentar
+// todos); quem ainda tem um curto ganha um novo e o backup passa a ir para ele.
+// As regras do Firestore (ver MUDANCAS.md) só aceitam gravar em códigos de 12+.
 const SYNC_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+export const SYNC_ID_LENGTH = 12;
 function newSyncId() {
-  const bytes = crypto.getRandomValues(new Uint8Array(6));
+  const bytes = crypto.getRandomValues(new Uint8Array(SYNC_ID_LENGTH));
   return Array.from(bytes, b => SYNC_ALPHABET[b % SYNC_ALPHABET.length]).join('');
 }
 
 export let syncId = localStorage.getItem('syncId');
-if (!syncId) {
+if (!syncId || syncId.length < SYNC_ID_LENGTH) {
+  if (syncId) {
+    localStorage.setItem('syncId:antigo', syncId);
+    localStorage.setItem('sync:pending', '1'); // cria o backup no código novo
+  }
   syncId = newSyncId();
   localStorage.setItem('syncId', syncId);
 }
+
+// "ABCD-EFGH-JKLM" na tela; ao digitar, aceita com ou sem traços/espaços.
+export function formatSyncCode(code) { return (String(code).match(/.{1,4}/g) || []).join('-'); }
+export function normalizeSyncCode(text) { return String(text).toUpperCase().replace(/[^A-Z0-9]/g, ''); }
 
 export function setSyncId(newId) {
   syncId = newId;
@@ -106,122 +118,140 @@ export async function fetchCloudBackup(code) {
   return raw;
 }
 
-export const MEDIA_BASE = "https://raw.githubusercontent.com/yuhonas/free-exercise-db/main/exercises/";
+import { CATALOG, MUSCLE_CATEGORIES, VOLUME_GROUP, MEDIA_BASE } from './catalog.js';
+import { CALI_STEP_LIST, stepMuscles } from './calisthenics-data.js';
 
-// Catálogo de exercícios da academia: grupo, músculos, dica e foto (free-exercise-db).
-export const db = {
-  "Agachamento Hack": { cat: "Quadríceps", prim: "Quadríceps", sec: ["Glúteo", "Adutores"], tip: "Desça o máximo sem descolar o calcanhar da base.", img: "Hack_Squat" },
-  "Leg Press Horizontal Articulado": { cat: "Quadríceps", prim: "Quadríceps", sec: ["Glúteo", "Adutores"], tip: "Máxima amplitude, não trave os joelhos no topo.", img: "Leg_Press" },
-  // Alternativas ao Hack e ao Leg Press, sem agachamento (o usuário não gosta de
-  // agachar). Entram pelo "Trocar" em Editar Exercícios.
-  "Subida no Banco": { cat: "Quadríceps", prim: "Quadríceps", sec: ["Glúteo"], tip: "Halteres nas mãos, pé inteiro no banco; suba empurrando pelo calcanhar da perna de cima, sem impulso da de baixo. Registre as repetições de uma perna (faça as duas).", img: "Dumbbell_Step_Ups" },
-  "Cadeira Extensora Unilateral": { cat: "Quadríceps", prim: "Quadríceps", sec: [], tip: "Uma perna por vez, pausa de 1s com a perna esticada. Registre as repetições de uma perna (faça as duas).", img: "Single-Leg_Leg_Extension" },
-  "Elevação Pélvica": { cat: "Glúteo", prim: "Glúteo", sec: ["Posterior de Coxa"], tip: "Costas apoiadas no banco, barra (com proteção) no quadril; suba até o tronco ficar reto e aperte o glúteo 1s no topo.", img: "Barbell_Hip_Thrust" },
-  "Stiff com Halteres": { cat: "Posterior de Coxa", prim: "Posterior de Coxa", sec: ["Glúteo", "Lombar"], tip: "Joelhos quase esticados, desça os halteres rente às pernas jogando o quadril para trás, coluna reta.", img: "Stiff-Legged_Dumbbell_Deadlift" },
-  "Glúteo na Polia (Coice)": { cat: "Glúteo", prim: "Glúteo", sec: ["Posterior de Coxa"], tip: "Tornozeleira na polia baixa; leve a perna para trás sem arquear a lombar.", img: "Glute_Kickback" },
-  "Cadeira Extensora": { cat: "Quadríceps", prim: "Quadríceps", sec: [], tip: "Pausa de 1s no topo com a perna esticada.", img: "Leg_Extensions" },
-  "Cadeira Flexora": { cat: "Posterior de Coxa", prim: "Posterior de Coxa", sec: ["Panturrilha"], tip: "Puxe apertando a perna contra o assento.", img: "Seated_Leg_Curl" },
-  "Mesa Flexora": { cat: "Posterior de Coxa", prim: "Posterior de Coxa", sec: ["Panturrilha"], tip: "Quadril colado na mesa durante o movimento.", img: "Lying_Leg_Curls" },
-  "Cadeira Abdutora": { cat: "Glúteo", prim: "Glúteo Médio", sec: ["Glúteo Máximo", "Lateral do Quadril"], tip: "Incline o tronco levemente à frente para focar no glúteo máximo.", img: "Thigh_Abductor" },
-  "Cadeira Adutora": { cat: "Inferiores", prim: "Adutores", sec: [], tip: "Aperte bem no final do movimento.", img: "Thigh_Adductor" },
-  "Panturrilha Sentado": { cat: "Inferiores", prim: "Panturrilha", sec: [], tip: "Alongue tudo embaixo e pause 1s no topo.", img: "Seated_Calf_Raise" },
-  "Supino Máquina": { cat: "Peito / Empurrar", prim: "Peito", sec: ["Ombro Anterior", "Tríceps"], tip: "Mantenha o peito estufado e os ombros firmes para trás.", img: "Leverage_Chest_Press" },
-  "Crucifixo Reto Articulado": { cat: "Peito / Empurrar", prim: "Peito", sec: ["Ombro Anterior"], tip: "Sinta o peito alongar ao máximo sem dobrar muito os cotovelos.", img: "Butterfly" },
-  "Puxada Alta Aberta Frente": { cat: "Costas / Puxar", prim: "Costas", sec: ["Bíceps", "Ombro Posterior"], tip: "Não mexa as escápulas durante a puxada! Puxe com os cotovelos até a frente do peito.", img: "Wide-Grip_Lat_Pulldown" },
-  "Remada Baixa com Triângulo": { cat: "Costas / Puxar", prim: "Costas", sec: ["Bíceps", "Ombro Posterior"], tip: "Tronco levemente inclinado, puxe no umbigo.", img: "Seated_Cable_Rows" },
-  "Elevação Lateral (Máquina/Polia)": { cat: "Ombro / Empurrar", prim: "Ombro Lateral", sec: ["Trapézio"], tip: "Empurre o peso para os lados, não para cima.", img: "Side_Lateral_Raise" },
-  "Desenvolvimento Articulado Aberto": { cat: "Ombro / Empurrar", prim: "Ombro Anterior", sec: ["Ombro Lateral", "Tríceps"], tip: "Não estique totalmente os cotovelos no topo para manter a tensão.", img: "Standing_Military_Press" },
-  "Rosca Bíceps (Máquina/Polia Baixa)": { cat: "Braços", prim: "Bíceps", sec: ["Antebraço"], tip: "Cotovelos fixos, evite balançar o tronco para ajudar o movimento.", img: "Standing_Biceps_Cable_Curl" },
-  "Tríceps Pulley Barra Reta": { cat: "Braços", prim: "Tríceps", sec: [], tip: "Mantenha os cotovelos colados ao tronco.", img: "Triceps_Pushdown" },
-  "Abdominal Máquina": { cat: "Core", prim: "Abdômen", sec: [], tip: "Enrole o tronco, não dobre apenas o quadril.", img: "Ab_Crunch_Machine" }
-};
+export { MEDIA_BASE, MUSCLE_CATEGORIES, VOLUME_GROUP };
 
-// Músculos que o volume semanal e o mapa do corpo reconhecem, com a categoria
-// usada no catálogo/histórico para exercícios criados pelo usuário.
-export const MUSCLE_CATEGORIES = {
-  "Peito": "Peito / Empurrar",
-  "Costas": "Costas / Puxar",
-  "Ombro Anterior": "Ombro / Empurrar",
-  "Ombro Lateral": "Ombro / Empurrar",
-  "Bíceps": "Braços",
-  "Tríceps": "Braços",
-  "Abdômen": "Core",
-  "Quadríceps": "Quadríceps",
-  "Posterior de Coxa": "Posterior de Coxa",
-  "Glúteo": "Glúteo",
-  "Glúteo Médio": "Glúteo",
-  "Adutores": "Inferiores",
-  "Panturrilha": "Inferiores"
-};
+// Catálogo para montar treinos: os exercícios de academia (catalog.js) + os de
+// calistenia e mobilidade (mesmo guia com instruções e ilustração; `step` é o
+// id deles em calisthenics-data.js) + os criados pelo usuário.
+export const db = { ...CATALOG };
+CALI_STEP_LIST.forEach(step => {
+  if (db[step.name]) return;
+  const muscles = stepMuscles(step) || { prim: ['Core'], sec: [] };
+  db[step.name] = {
+    cat: step.area === 'mobilidade' ? 'Mobilidade' : 'Peso do corpo',
+    prim: muscles.prim[0],
+    sec: [...muscles.prim.slice(1), ...muscles.sec],
+    img: step.img,
+    tip: step.tip,
+    type: step.mode === 'time' ? 'time' : 'reps',
+    step: step.id
+  };
+});
 
-// Músculos mais específicos que o mapa mostra separados, mas que no volume
-// semanal somam no grupo principal.
-export const VOLUME_GROUP = {
-  "Glúteo Médio": "Glúteo",
-  "Glúteo Máximo": "Glúteo",
-  "Reto Femoral": "Quadríceps"
-};
+export function exerciseType(name) { return (db[name] && db[name].type) || 'load'; }
 
 const CUSTOM_EXERCISES_KEY = 'gym:customExercises';
+const EXERCISE_TYPE_IDS = ['load', 'reps', 'time'];
+
+function customEntry({ prim, type }) {
+  return { cat: MUSCLE_CATEGORIES[prim] || 'Outros', prim, sec: [], tip: '', custom: true, type: EXERCISE_TYPE_IDS.includes(type) ? type : 'load' };
+}
 
 function loadCustomExercises() {
   try {
     const saved = JSON.parse(localStorage.getItem(CUSTOM_EXERCISES_KEY) || '{}');
-    for (const name in saved) {
-      const prim = saved[name].prim;
-      db[name] = { cat: MUSCLE_CATEGORIES[prim] || 'Outros', prim, sec: [], tip: '', custom: true };
-    }
+    for (const name in saved) db[name] = customEntry(saved[name]);
   } catch (e) { /* lista corrompida: segue só com o catálogo padrão */ }
 }
 loadCustomExercises();
 
-export function addCustomExercise(name, prim) {
+export function addCustomExercise(name, prim, type = 'load') {
   const saved = JSON.parse(localStorage.getItem(CUSTOM_EXERCISES_KEY) || '{}');
-  saved[name] = { prim };
+  saved[name] = { prim, type };
   localStorage.setItem(CUSTOM_EXERCISES_KEY, JSON.stringify(saved));
-  db[name] = { cat: MUSCLE_CATEGORIES[prim] || 'Outros', prim, sec: [], tip: '', custom: true };
+  db[name] = customEntry(saved[name]);
 }
 
 export const SETS_PER_EXERCISE = 3;
+export const MAX_SETS = 10;
 
-const DEFAULT_PLAN = {
-  "Treino A": { group: "lower", exercises: ["Agachamento Hack", "Leg Press Horizontal Articulado", "Cadeira Extensora", "Cadeira Flexora", "Mesa Flexora", "Cadeira Abdutora", "Cadeira Adutora", "Panturrilha Sentado"] },
-  "Treino B": { group: "upper", exercises: ["Supino Máquina", "Crucifixo Reto Articulado", "Puxada Alta Aberta Frente", "Remada Baixa com Triângulo", "Elevação Lateral (Máquina/Polia)", "Desenvolvimento Articulado Aberto", "Rosca Bíceps (Máquina/Polia Baixa)", "Tríceps Pulley Barra Reta", "Abdominal Máquina"] }
-};
+// ---------- Treinos ----------
+// Lista ordenada em `gym:workouts`, cada treino:
+//   { id, name, color, exercises: [nomes], sets: { nome: n }, retired: [nomes], archived? }
+// - `id` é gravado no histórico (campo `day`) e nas chaves da sessão
+//   (series:<id>:..., sessaoInicio:<id>:...): nunca muda, mesmo renomeando.
+// - `retired`: exercícios que já estiveram no treino e saíram — o calendário e
+//   o histórico continuam atribuindo os registros antigos a ele.
+// - `archived`: treino apagado que tinha histórico; some da tela, mas o
+//   calendário ainda mostra os dias dele com o nome e a cor.
+const WORKOUTS_KEY = 'gym:workouts';
+export const WORKOUT_COLORS = ['#3b82f6', '#8b5cf6', '#ec4899', '#14b8a6', '#eab308', '#ef4444', '#22c55e', '#06b6d4'];
 
-// O treino editado pelo usuário fica em `gym:plan`. Por dia:
-// - exercises: ordem atual
-// - sets: número de séries por exercício (sem valor = SETS_PER_EXERCISE)
-// - retired: exercícios que já estiveram nesse treino e foram tirados — o
-//   calendário e o histórico continuam atribuindo os registros antigos a ele.
-const PLAN_KEY = 'gym:plan';
+export const workoutData = {};
+export const days = [];
 
-function loadPlan() {
-  let saved = null;
-  try { saved = JSON.parse(localStorage.getItem(PLAN_KEY) || 'null'); } catch (e) { saved = null; }
-  const plan = {};
-  for (const day in DEFAULT_PLAN) {
-    const s = (saved && saved[day]) || {};
-    plan[day] = {
-      group: DEFAULT_PLAN[day].group,
-      exercises: Array.isArray(s.exercises) ? s.exercises.filter(ex => db[ex]) : [...DEFAULT_PLAN[day].exercises],
-      sets: s.sets && typeof s.sets === 'object' ? s.sets : {},
-      retired: Array.isArray(s.retired) ? s.retired : []
-    };
-  }
-  return plan;
+function addLoaded(w) {
+  if (!w || typeof w.id !== 'string' || !w.id || workoutData[w.id]) return;
+  workoutData[w.id] = {
+    id: w.id,
+    name: typeof w.name === 'string' && w.name.trim() ? w.name.trim() : 'Treino',
+    color: typeof w.color === 'string' ? w.color : WORKOUT_COLORS[days.length % WORKOUT_COLORS.length],
+    exercises: Array.isArray(w.exercises) ? w.exercises.filter(ex => db[ex]) : [],
+    sets: w.sets && typeof w.sets === 'object' ? { ...w.sets } : {},
+    retired: Array.isArray(w.retired) ? w.retired.filter(ex => typeof ex === 'string') : [],
+    archived: !!w.archived
+  };
+  days.push(w.id);
 }
 
-export const workoutData = loadPlan();
-export const days = Object.keys(workoutData);
-
 export function savePlan() {
-  const out = {};
-  for (const day in workoutData) {
-    const { exercises, sets, retired } = workoutData[day];
-    out[day] = { exercises, sets, retired };
+  localStorage.setItem(WORKOUTS_KEY, JSON.stringify(days.map(id => {
+    const { name, color, exercises, sets, retired, archived } = workoutData[id];
+    return archived ? { id, name, color, exercises, sets, retired, archived } : { id, name, color, exercises, sets, retired };
+  })));
+}
+
+// Treinos que aparecem na tela (sem os apagados que só guardam histórico).
+export function activeDays() { return days.filter(id => !workoutData[id].archived); }
+
+function newWorkoutId() {
+  let id;
+  do { id = `w${Date.now().toString(36)}${Math.floor(Math.random() * 1296).toString(36)}`; } while (workoutData[id]);
+  return id;
+}
+
+export function createWorkout(name, exercises = [], sets = {}) {
+  const used = new Set(activeDays().map(id => workoutData[id].color));
+  const color = WORKOUT_COLORS.find(c => !used.has(c)) || WORKOUT_COLORS[days.length % WORKOUT_COLORS.length];
+  const id = newWorkoutId();
+  addLoaded({ id, name: String(name).slice(0, 30), color, exercises: [...new Set(exercises)].filter(ex => db[ex]), sets });
+  savePlan();
+  return id;
+}
+
+export function updateWorkout(id, changes) {
+  const w = workoutData[id];
+  if (!w) return;
+  if (typeof changes.name === 'string' && changes.name.trim()) w.name = changes.name.trim().slice(0, 30);
+  if (typeof changes.color === 'string') w.color = changes.color;
+  savePlan();
+}
+
+// Apagar: sem histórico some de vez; com histórico vira "arquivado" (os dias
+// continuam no calendário com o nome e a cor).
+export function deleteWorkout(id, hasHistory) {
+  if (!workoutData[id]) return;
+  if (hasHistory) {
+    workoutData[id].archived = true;
+  } else {
+    delete workoutData[id];
+    days.splice(days.indexOf(id), 1);
   }
-  localStorage.setItem(PLAN_KEY, JSON.stringify(out));
+  savePlan();
+}
+
+export function moveWorkout(id, step) {
+  const active = activeDays();
+  const from = active.indexOf(id);
+  const to = from + step;
+  if (from < 0 || to < 0 || to >= active.length) return;
+  const a = days.indexOf(id);
+  const b = days.indexOf(active[to]);
+  [days[a], days[b]] = [days[b], days[a]];
+  savePlan();
 }
 
 export function setsFor(day, exercise) {
@@ -235,24 +265,60 @@ export function exercisesEverIn(day) {
   return [...new Set([...workoutData[day].exercises, ...workoutData[day].retired])];
 }
 
-// Pedido de 2026-10-16: o Agachamento Hack sai do treino de perna (o usuário não
-// gosta de agachar); o Leg Press fica. A Extensora Unilateral (3 séries) entra
-// para manter o volume de quadríceps (9 séries, como antes), depois da Cadeira
-// Flexora: o quadríceps descansa entre as duas extensoras. O Hack vai para `retired`, então o histórico continua no calendário.
-// Roda uma vez por aparelho.
-const LEG_CHANGE_KEY = 'plan:perna-sem-hack';
-if (!localStorage.getItem(LEG_CHANGE_KEY)) {
-  days.forEach(day => {
-    const plan = workoutData[day];
-    if (!plan.exercises.includes('Agachamento Hack')) return;
-    plan.exercises = plan.exercises.filter(ex => ex !== 'Agachamento Hack');
-    if (!plan.retired.includes('Agachamento Hack')) plan.retired.push('Agachamento Hack');
-    const add = 'Cadeira Extensora Unilateral';
-    if (days.some(d => workoutData[d].exercises.includes(add))) return;
-    const after = ['Cadeira Flexora', 'Cadeira Extensora'].map(ex => plan.exercises.indexOf(ex)).find(i => i >= 0);
-    plan.exercises.splice(after >= 0 ? after + 1 : plan.exercises.length, 0, add);
-    plan.retired = plan.retired.filter(ex => ex !== add);
-  });
-  savePlan();
-  localStorage.setItem(LEG_CHANGE_KEY, '1');
+// ---------- Migração da versão 2.x ----------
+// Até a 2.6 havia dois treinos fixos: "Treino A" (Inferior) e "Treino B"
+// (Superior), em `gym:plan`. Quem já usava o app continua com eles — mesmos ids,
+// então todo o histórico continua ligado —, com o nome e a cor de antes.
+// Instalação nova começa sem nenhum treino.
+const LEGACY_PLAN_KEY = 'gym:plan';
+const LEGACY_DEFAULT = {
+  'Treino B': { name: 'Superior', color: '#3b82f6', exercises: ['Supino Máquina', 'Crucifixo Reto Articulado', 'Puxada Alta Aberta Frente', 'Remada Baixa com Triângulo', 'Elevação Lateral (Máquina/Polia)', 'Desenvolvimento Articulado Aberto', 'Rosca Bíceps (Máquina/Polia Baixa)', 'Tríceps Pulley Barra Reta', 'Abdominal Máquina'] },
+  'Treino A': { name: 'Inferior', color: '#8b5cf6', exercises: ['Agachamento Hack', 'Leg Press Horizontal Articulado', 'Cadeira Extensora', 'Cadeira Flexora', 'Mesa Flexora', 'Cadeira Abdutora', 'Cadeira Adutora', 'Panturrilha Sentado'] }
+};
+
+export function hasLegacyData() {
+  if (localStorage.getItem(LEGACY_PLAN_KEY) || localStorage.getItem('completedDaysAllTime')) return true;
+  for (let i = 0; i < localStorage.length; i++) {
+    if (localStorage.key(i).startsWith('historico:')) return true;
+  }
+  return false;
 }
+
+function migrateLegacyPlan() {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(LEGACY_PLAN_KEY) || 'null'); } catch (e) { saved = null; }
+  Object.entries(LEGACY_DEFAULT).forEach(([id, def]) => {
+    const s = (saved && typeof saved[id] === 'object' && saved[id]) || {};
+    const w = {
+      id,
+      name: def.name,
+      color: def.color,
+      exercises: Array.isArray(s.exercises) ? [...s.exercises] : [...def.exercises],
+      sets: s.sets && typeof s.sets === 'object' ? s.sets : {},
+      retired: Array.isArray(s.retired) ? [...s.retired] : []
+    };
+    // Pedido de 2026-10-16 (v2.6), para quem ainda não tinha recebido: o Hack
+    // sai do treino de perna e a Extensora Unilateral entra depois da Flexora.
+    if (!localStorage.getItem('plan:perna-sem-hack') && w.exercises.includes('Agachamento Hack')) {
+      w.exercises = w.exercises.filter(ex => ex !== 'Agachamento Hack');
+      if (!w.retired.includes('Agachamento Hack')) w.retired.push('Agachamento Hack');
+      if (!w.exercises.includes('Cadeira Extensora Unilateral')) {
+        const after = ['Cadeira Flexora', 'Cadeira Extensora'].map(ex => w.exercises.indexOf(ex)).find(i => i >= 0);
+        w.exercises.splice(after >= 0 ? after + 1 : w.exercises.length, 0, 'Cadeira Extensora Unilateral');
+      }
+      w.retired = w.retired.filter(ex => ex !== 'Cadeira Extensora Unilateral');
+    }
+    addLoaded(w);
+  });
+}
+
+(function loadWorkouts() {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(WORKOUTS_KEY) || 'null'); } catch (e) { saved = null; }
+  if (Array.isArray(saved)) {
+    saved.forEach(addLoaded);
+    return;
+  }
+  if (hasLegacyData()) migrateLegacyPlan();
+  savePlan();
+})();
